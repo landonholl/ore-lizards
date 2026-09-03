@@ -1,0 +1,469 @@
+package com.orelizards.entity;
+
+import com.orelizards.entity.ai.FleeAndBurrowGoal;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.BlockParticleOption;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.DifficultyInstance;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EntitySelector;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.SpawnGroupData;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.PickaxeItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Tier;
+import net.minecraft.world.item.Tiers;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ItemLike;
+import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import org.jetbrains.annotations.Nullable;
+import software.bernie.geckolib.animatable.GeoEntity;
+import software.bernie.geckolib.core.animatable.instance.AnimatableInstanceCache;
+import software.bernie.geckolib.core.animation.AnimatableManager;
+import software.bernie.geckolib.core.animation.AnimationController;
+import software.bernie.geckolib.core.animation.RawAnimation;
+import software.bernie.geckolib.core.object.PlayState;
+import software.bernie.geckolib.util.GeckoLibUtil;
+
+import java.util.UUID;
+
+public class OreLizardEntity extends PathfinderMob implements GeoEntity {
+	public enum State {
+		BURIED,
+		ERUPTING,
+		FLEEING,
+		DIGGING_DOWN
+	}
+
+	private static final EntityDataAccessor<Integer> ORE_VARIANT =
+			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.INT);
+	private static final EntityDataAccessor<Boolean> DEEPSLATE =
+			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.BOOLEAN);
+	// Synced so the client's own copy of the entity (which is what AnimationController actually
+	// reads from, since that runs on the render thread) sees real state transitions - a plain
+	// unsynced field only ever got updated in the server-gated half of tick(), so client-side
+	// checks like "== State.DIGGING_DOWN" were permanently stuck at the initial default.
+	private static final EntityDataAccessor<Integer> STATE =
+			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.INT);
+
+	private static final UUID FLEE_SPEED_MODIFIER_ID = UUID.fromString("6f6a1f0a-6b6a-4e2b-9b8c-6f2e3a9d1a10");
+	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
+	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
+	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
+	private static final RawAnimation SCUTTLE_ANIM = RawAnimation.begin().thenLoop("scuttle");
+	// One-shot (not looping) - plays through once then holds, matching the DIGGING_DOWN state.
+	private static final RawAnimation BURROW_ANIM = RawAnimation.begin().thenPlay("burrow");
+	private static final RawAnimation APPEAR_ANIM = RawAnimation.begin().thenPlay("appear");
+
+	// Spawn band: high enough to reach the stone layer (deepslate takes over below Y=-8), but
+	// still required to sit well under the terrain surface so it stays a cave mob.
+	private static final int MAX_SPAWN_Y = 50;
+	private static final int MIN_DEPTH_BELOW_SURFACE = 8;
+	// 1.20.1 worldgen replaces stone with deepslate entirely below Y=-8, blending randomly from
+	// Y=0 down. -4 is the midpoint of that band, so it's the closest single threshold to what the
+	// surrounding rock actually looks like - and it's the rule that drives the distribution in the
+	// first place, so reading it directly beats sampling blocks at spawn time.
+	private static final int DEEPSLATE_Y_LEVEL = -4;
+
+	// Spawn attempts that pass every other rule still fail 30% of the time, trimming the rate
+	// without needing a fractional spawn weight (weights are ints, and ours is already at 1).
+	private static final int SPAWN_CHANCE_PERCENT = 70;
+
+	// Despawn tuning. Vanilla re-evaluates despawning every single tick per mob; we only bother
+	// every 5 seconds, and even then bail out early on the cheap checks.
+	private static final int DESPAWN_CHECK_INTERVAL = 100;
+	private static final double NO_DESPAWN_RADIUS = 48.0;
+	private static final double NO_DESPAWN_RADIUS_SQ = NO_DESPAWN_RADIUS * NO_DESPAWN_RADIUS;
+	// Vanilla rolls 1-in-800 per tick; we roll 1-in-10 per 5s check, and only once the player has
+	// actually surfaced, which makes these far stickier than an ordinary mob.
+	private static final int DESPAWN_ROLL = 10;
+
+	private static final double TRIGGER_RANGE = 5.0;
+	// Matches the 1-second length of the "appear" animation so it isn't cut off mid-play by the
+	// transition into FLEEING.
+	private static final int ERUPT_DURATION_TICKS = 20;
+	private static final int FLEE_DURATION_TICKS = 260;
+	private static final int DIG_DURATION_TICKS = 30;
+
+	private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
+
+	private int stateTimer;
+	@Nullable
+	private LivingEntity fleeTarget;
+
+	public OreLizardEntity(EntityType<? extends OreLizardEntity> type, Level level) {
+		super(type, level);
+		this.goalSelector.addGoal(0, new FleeAndBurrowGoal(this));
+		this.goalSelector.addGoal(1, new FloatGoal(this));
+		// Look-flag goals, not move-flag - these run concurrently with fleeing rather than
+		// competing for control, they just keep it from looking like a stiff statue during the
+		// brief erupting/digging-down windows where it's visible but not actively pathing.
+		this.goalSelector.addGoal(2, new LookAtPlayerGoal(this, Player.class, 6.0F));
+		this.goalSelector.addGoal(3, new RandomLookAroundGoal(this));
+	}
+
+	public static AttributeSupplier.Builder createAttributes() {
+		return PathfinderMob.createMobAttributes()
+				.add(Attributes.MAX_HEALTH, 10.0)
+				.add(Attributes.MOVEMENT_SPEED, 0.3)
+				.add(Attributes.KNOCKBACK_RESISTANCE, 0.5)
+				.add(Attributes.ARMOR, 15.0)
+				.add(Attributes.ARMOR_TOUGHNESS, 8.0);
+	}
+
+	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, MobSpawnType spawnType,
+			BlockPos pos, RandomSource random) {
+		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
+		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
+		//
+		// The old "Y < 0" rule made stone lizards unreachable: 1.20.1 worldgen fully replaces
+		// stone with deepslate below Y=-8 (blending from Y=0 down), so every natural spawn landed
+		// on deepslate. The ceiling now reaches up into the stone band instead. Depth-below-
+		// surface (rather than a light check) is what keeps it genuinely underground, since it
+		// works during worldgen when lighting isn't computed yet and ignores player torches.
+		// Cheapest gate first so the majority of rejected attempts never reach the heightmap lookup.
+		return random.nextInt(100) < SPAWN_CHANCE_PERCENT
+				&& pos.getY() < MAX_SPAWN_Y
+				&& isUnderground(level, pos)
+				&& level.getBlockState(pos.below()).is(BlockTags.BASE_STONE_OVERWORLD);
+	}
+
+	/**
+	 * Well below the terrain surface for this column, rather than a sky-light test: this works
+	 * during worldgen before lighting is computed, and ignores player-placed torches.
+	 */
+	private static boolean isUnderground(LevelReader level, BlockPos pos) {
+		int surfaceY = level.getHeight(Heightmap.Types.WORLD_SURFACE, pos.getX(), pos.getZ());
+		return pos.getY() < surfaceY - MIN_DEPTH_BELOW_SURFACE;
+	}
+
+	/**
+	 * Ore Lizards are meant to be a rare find, so a player who surfaces for a moment shouldn't
+	 * come back to an emptied-out cave system. Two differences from vanilla despawning:
+	 * they never despawn while the nearest player is still underground, and this only evaluates
+	 * every {@value #DESPAWN_CHECK_INTERVAL} ticks instead of vanilla's every-tick check - the
+	 * expensive heightmap lookup sits behind both a tick gate and a distance gate, so on the
+	 * common path this does less work than the vanilla implementation it replaces.
+	 */
+	@Override
+	public void checkDespawn() {
+		if (this.isPersistenceRequired() || this.requiresCustomPersistence()) {
+			return;
+		}
+		if (this.tickCount % DESPAWN_CHECK_INTERVAL != 0) {
+			return;
+		}
+
+		Player player = this.level().getNearestPlayer(this, -1.0);
+		if (player == null) {
+			super.checkDespawn();
+			return;
+		}
+		if (player.distanceToSqr(this) < NO_DESPAWN_RADIUS_SQ) {
+			return;
+		}
+		if (isUnderground(this.level(), player.blockPosition())) {
+			return;
+		}
+
+		if (this.random.nextInt(DESPAWN_ROLL) == 0) {
+			this.discard();
+		}
+	}
+
+	@Override
+	protected void defineSynchedData() {
+		super.defineSynchedData();
+		this.entityData.define(ORE_VARIANT, OreVariant.COAL.ordinal());
+		this.entityData.define(DEEPSLATE, false);
+		this.entityData.define(STATE, State.BURIED.ordinal());
+	}
+
+	@Override
+	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType,
+			@Nullable SpawnGroupData spawnGroupData, @Nullable CompoundTag dataTag) {
+		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
+		this.setDeepslate(deepslate);
+		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
+		this.setInvisible(true);
+		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData, dataTag);
+	}
+
+	public OreVariant getOreVariant() {
+		return OreVariant.values()[this.entityData.get(ORE_VARIANT)];
+	}
+
+	public boolean isDeepslate() {
+		return this.entityData.get(DEEPSLATE);
+	}
+
+	public void setDeepslate(boolean deepslate) {
+		this.entityData.set(DEEPSLATE, deepslate);
+	}
+
+	public void setOreVariant(OreVariant variant) {
+		this.entityData.set(ORE_VARIANT, variant.ordinal());
+	}
+
+	public State getLizardState() {
+		return State.values()[this.entityData.get(STATE)];
+	}
+
+	private void setLizardState(State state) {
+		this.entityData.set(STATE, state.ordinal());
+	}
+
+	public boolean isFleeing() {
+		return this.getLizardState() == State.FLEEING;
+	}
+
+	@Nullable
+	public LivingEntity getFleeTarget() {
+		return this.fleeTarget;
+	}
+
+	@Override
+	public void tick() {
+		super.tick();
+		if (this.level().isClientSide) {
+			return;
+		}
+		switch (this.getLizardState()) {
+			case BURIED -> this.tickBuried();
+			case ERUPTING -> this.tickErupting();
+			case FLEEING -> this.tickFleeing();
+			case DIGGING_DOWN -> this.tickDiggingDown();
+		}
+	}
+
+	private void tickBuried() {
+		// Uses vanilla's own named predicate rather than the boolean overload - that boolean's
+		// polarity is the opposite of what it reads like (false = NO_SPECTATORS, which still
+		// detects creative players), which previously let creative players wake dormant lizards.
+		Player nearest = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
+				EntitySelector.NO_CREATIVE_OR_SPECTATOR);
+		if (nearest != null) {
+			this.fleeTarget = nearest;
+			this.setLizardState(State.ERUPTING);
+			this.stateTimer = ERUPT_DURATION_TICKS;
+			this.setInvisible(false);
+			this.spawnBurstParticles();
+		}
+	}
+
+	private void tickErupting() {
+		this.stateTimer--;
+		if (this.stateTimer <= 0) {
+			this.setLizardState(State.FLEEING);
+			this.stateTimer = FLEE_DURATION_TICKS;
+			AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+			if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
+				// 2.5x flee speed reduced by 23% (per feedback that it was too fast to react to): 2.5 * 0.77 = 1.925x
+				speed.addTransientModifier(new AttributeModifier(
+						FLEE_SPEED_MODIFIER_ID, "Flee speed boost", 0.925, AttributeModifier.Operation.MULTIPLY_TOTAL));
+			}
+		}
+	}
+
+	private void tickFleeing() {
+		this.stateTimer--;
+		if (this.stateTimer <= 0) {
+			this.setLizardState(State.DIGGING_DOWN);
+			this.stateTimer = DIG_DURATION_TICKS;
+			AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+			if (speed != null) {
+				speed.removeModifier(FLEE_SPEED_MODIFIER_ID);
+			}
+			this.getNavigation().stop();
+		}
+	}
+
+	private void tickDiggingDown() {
+		this.stateTimer--;
+		if (this.stateTimer <= 0) {
+			this.spawnBurstParticles();
+			this.discard();
+		}
+	}
+
+	private void spawnBurstParticles() {
+		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_BREAK : SoundEvents.STONE_BREAK, 1.0F, 1.0F);
+		if (!(this.level() instanceof ServerLevel serverLevel)) {
+			return;
+		}
+		BlockState blockState = this.level().getBlockState(this.blockPosition().below());
+		serverLevel.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, blockState),
+				this.getX(), this.getY() + 0.5, this.getZ(), 20, 0.3, 0.3, 0.3, 0.05);
+	}
+
+	@Override
+	public boolean hurt(DamageSource source, float amount) {
+		if (source.getEntity() instanceof Player player && (player.isCreative() || player.isSpectator())) {
+			return false;
+		}
+		this.panicFromDamageIfDormant(source);
+		if (this.isPickaxeHit(source)) {
+			AttributeInstance armor = this.getAttribute(Attributes.ARMOR);
+			AttributeInstance toughness = this.getAttribute(Attributes.ARMOR_TOUGHNESS);
+			double armorBase = armor != null ? armor.getBaseValue() : 0;
+			double toughnessBase = toughness != null ? toughness.getBaseValue() : 0;
+			if (armor != null) armor.setBaseValue(0);
+			if (toughness != null) toughness.setBaseValue(0);
+			boolean result = super.hurt(source, amount);
+			if (armor != null) armor.setBaseValue(armorBase);
+			if (toughness != null) toughness.setBaseValue(toughnessBase);
+			return result;
+		}
+		return super.hurt(source, amount);
+	}
+
+	@Override
+	protected SoundEvent getHurtSound(DamageSource damageSource) {
+		return this.isDeepslate() ? SoundEvents.DEEPSLATE_HIT : SoundEvents.STONE_HIT;
+	}
+
+	/**
+	 * The scuttle sound. Vanilla calls this from {@code Entity.move()} paced by distance
+	 * travelled, so it automatically speeds up with the 1.925x flee boost rather than needing its
+	 * own timer. Stone/deepslate to match its body, pitched well up so it reads as a small
+	 * skittering critter rather than something heavy walking.
+	 */
+	@Override
+	protected void playStepSound(BlockPos pos, BlockState state) {
+		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_STEP : SoundEvents.STONE_STEP, 0.18F, 1.6F);
+	}
+
+	/**
+	 * Vanilla suffocates any living entity whose hitbox overlaps a solid block each tick - fine
+	 * for normal mobs, but ours is meant to sit embedded in stone/deepslate while dormant and sink
+	 * back into it while burrowing down, so it needs to be exempt during those phases. Only
+	 * FLEEING (out in open cave air) keeps the normal vanilla check as a safety net.
+	 */
+	@Override
+	public boolean isInWall() {
+		return this.getLizardState() == State.FLEEING && super.isInWall();
+	}
+
+	/**
+	 * LivingEntity re-evaluates the invisibility flag EVERY tick as
+	 * {@code setInvisible(hasEffect(INVISIBILITY))}, which silently wiped the one-time
+	 * {@code setInvisible(true)} from {@link #finalizeSpawn} on the very next tick - that's why
+	 * wild lizards were sitting in plain sight instead of hidden. Re-assert it while dormant.
+	 */
+	@Override
+	protected void updateInvisibilityStatus() {
+		if (this.getLizardState() == State.BURIED) {
+			this.setInvisible(true);
+			return;
+		}
+		super.updateInvisibilityStatus();
+	}
+
+	/**
+	 * A dormant lizard is invisible and meant to read as "part of the floor" - players shouldn't
+	 * bump into an unseen hitbox or be able to shove it around.
+	 */
+	@Override
+	public boolean isPushable() {
+		return this.getLizardState() != State.BURIED && super.isPushable();
+	}
+
+	/**
+	 * A real animal that gets hurt doesn't wait around to notice you're close - it bolts
+	 * immediately. Previously only proximity triggered the eruption/flee response, so a lizard
+	 * struck by AoE damage (or found and hit while still buried) just sat there.
+	 */
+	private void panicFromDamageIfDormant(DamageSource source) {
+		State current = this.getLizardState();
+		if (current != State.BURIED && current != State.ERUPTING) {
+			return;
+		}
+
+		if (source.getEntity() instanceof LivingEntity attacker) {
+			this.fleeTarget = attacker;
+		}
+		this.setInvisible(false);
+		this.setLizardState(State.FLEEING);
+		this.stateTimer = FLEE_DURATION_TICKS;
+		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+		if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
+			speed.addTransientModifier(new AttributeModifier(
+					FLEE_SPEED_MODIFIER_ID, "Flee speed boost", 0.925, AttributeModifier.Operation.MULTIPLY_TOTAL));
+		}
+		this.spawnBurstParticles();
+	}
+
+	private boolean isPickaxeHit(DamageSource source) {
+		if (!(source.getEntity() instanceof Player player)) {
+			return false;
+		}
+		ItemStack weapon = player.getMainHandItem();
+		if (!(weapon.getItem() instanceof PickaxeItem pickaxe)) {
+			return false;
+		}
+		Tier tier = pickaxe.getTier();
+		return tier == Tiers.IRON || tier == Tiers.DIAMOND || tier == Tiers.NETHERITE;
+	}
+
+	@Override
+	protected void dropCustomDeathLoot(DamageSource damageSource, int lootingMultiplier, boolean allowDrops) {
+		super.dropCustomDeathLoot(damageSource, lootingMultiplier, allowDrops);
+		if (!allowDrops) {
+			return;
+		}
+		ItemLike dropItem = this.getOreVariant().getDropItem();
+		int count = 1 + this.random.nextInt(3);
+		this.spawnAtLocation(new ItemStack(dropItem, count));
+	}
+
+	@Override
+	public AnimatableInstanceCache getAnimatableInstanceCache() {
+		return this.cache;
+	}
+
+	@Override
+	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+		controllers.add(new AnimationController<>(this, "movement", 5, state -> {
+			// State checks take priority over the generic movement check below, so burrow/appear
+			// can't get interrupted by some incidental movement source during those windows.
+			State lizardState = state.getAnimatable().getLizardState();
+			if (lizardState == State.DIGGING_DOWN) {
+				return state.setAndContinue(BURROW_ANIM);
+			}
+			if (lizardState == State.ERUPTING) {
+				return state.setAndContinue(APPEAR_ANIM);
+			}
+			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
+			// mobs use for their walk cycle) rather than our own isFleeing() flag, so it scuttles
+			// whenever it's genuinely moving for any reason - fleeing, knockback, pushed by
+			// another entity, etc. - not only during the AI's own flee state.
+			if (state.isMoving()) {
+				return state.setAndContinue(SCUTTLE_ANIM);
+			}
+			return PlayState.STOP;
+		}));
+	}
+}
