@@ -16,9 +16,9 @@ public class OreLizardModel extends GeoModel<OreLizardEntity> {
 	private static final ResourceLocation ANIMATIONS =
 			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "animations/entity/ore_lizard.animation.json");
 
-	// GeckoLib 4.8 (1.21.4) hands the model and texture lookups the renderer that is asking, so one
-	// GeoModel can serve several renderers. There is only ever one renderer here; the parameter is
-	// unused.
+	// GeckoLib 4.7 (1.21.3), like 4.8 on 1.21.4, hands the model and texture lookups the renderer that
+	// is asking, so one GeoModel can serve several renderers. There is only ever one renderer here; the
+	// parameter is unused.
 	@Override
 	public ResourceLocation getModelResource(OreLizardEntity animatable, GeoRenderer<OreLizardEntity> renderer) {
 		return MODEL;

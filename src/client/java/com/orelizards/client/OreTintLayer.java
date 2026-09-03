@@ -61,10 +61,11 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 		super(renderer);
 	}
 
-	// The trailing renderColor on both hooks is new with GeckoLib 4.8 on 1.21.4: the renderer's own
-	// packed ARGB colour for the base pass (getRenderColor, opaque white for this entity). It is
-	// deliberately not folded into the tint - the variant colour is meant to multiply the texture as
-	// written, and the 1.20.1 original never modulated it by the base colour either.
+	// The trailing renderColor on both hooks is what GeckoLib's 1.21.2+ builds pass (4.7 here on
+	// 1.21.3, 4.8 on 1.21.4): the renderer's own packed ARGB colour for the base pass (getRenderColor,
+	// opaque white for this entity). It is deliberately not folded into the tint - the variant colour is
+	// meant to multiply the texture as written, and the 1.20.1 original never modulated it by the base
+	// colour either.
 	@Override
 	public void renderForBone(PoseStack poseStack, OreLizardEntity animatable, GeoBone bone, RenderType renderType,
 			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay,

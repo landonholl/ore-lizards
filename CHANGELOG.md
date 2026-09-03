@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.2.0+mc1.21.3
+
+A port of 1.2.0 to Minecraft 1.21.3 (Fabric Loader 0.19.5, Fabric API 0.114.1, GeckoLib 4.7.1,
+Java 21), built from the 1.21.4 port below rather than from 1.20.1 directly. 1.21.2 is the release
+where the API changes that section describes arrived - `hurtServer`, `EntitySpawnReason`,
+`EntityType.Builder.build` taking the registry key, `Item.Properties.setId`, the `ToolMaterial`-based
+"iron or better" pickaxe check - so almost all of it applies to 1.21.3 unchanged, as does everything in
+the `## 1.2.0+mc1.21.1` section. GeckoLib 4.7.1 for 1.21.3 has the same `GeoModel`, `GeoRenderLayer`
+and `renderCubesOfBone` signatures as 4.8.5 for 1.21.4 and, like it, no nested `mclib` jar, so the
+client code is byte-for-byte the 1.21.4 code. The mob is meant to behave exactly as it does on 1.20.1.
+Below is only where this branch differs from the 1.21.4 port.
+
+### Changed
+
+- **The spawn egg's colours are back on the item, as on 1.20.1.** Item model definitions
+  (`assets/<namespace>/items/<id>.json`) are a 1.21.4 addition; 1.21.3 has no such folder, and its
+  `SpawnEggItem` still takes the body and highlight colours as constructor arguments, which the client
+  applies to the two layers of `template_spawn_egg` through `ItemColors` and `SpawnEggItem.getColor`
+  exactly as 1.20.1 does. So `ModItems` passes `0x6E6E6E` / `0x63E1FF` in Java again, and the
+  `items/ore_lizard_spawn_egg.json` the 1.21.4 port added is gone from this branch - 1.21.3 would never
+  read it, and leaving it in place would only suggest that it does something. `Item.Properties.setId`
+  is still required; that requirement is 1.21.2's, not 1.21.4's.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 1.21.3 + GeckoLib 4.7.1 and
+  smoke-tested on a headless dedicated server only. Everything the 1.21.4 section lists as unverified -
+  the tint pass, the emissive pass, the buried-lizard invisibility skip, the `appear`/`burrow`
+  transition timing, the egg's tint, and the `PoseStack.Pose.trustedNormals` detail (the flag exists on
+  1.21.3 too) - is unverified here for the same reason.
+
 ## 1.2.0+mc1.21.4
 
 A port of 1.2.0 to Minecraft 1.21.4 (Fabric Loader 0.19.5, Fabric API 0.119.4, GeckoLib 4.8.5,

@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.21.4 (Java 21, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.21.3 (Java 21, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.5 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.7.1 drives its model/animations.
 
-This branch (`1.21.4`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.1` port
-branch; behaviour is meant to be identical, and the `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1`
-sections of [CHANGELOG.md](CHANGELOG.md) together list every place the port had to differ and why.
-When in doubt about *what the mob should do*, `main` is the source of truth.
+This branch (`1.21.3`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.4` port
+branch (itself built on `1.21.1`); behaviour is meant to be identical, and the `## 1.2.0+mc1.21.3`,
+`## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections of [CHANGELOG.md](CHANGELOG.md) together list
+every place the port had to differ and why. When in doubt about *what the mob should do*, `main` is
+the source of truth.
 
 ## Commands
 
@@ -104,13 +105,13 @@ means adding an enum constant — no new textures, no renderer changes. Drop cou
 nested `DropTier` (bulk ores 4-6; gold/diamond/emerald 2-4 with a 2% roll for 6), so a new variant
 just names its tier.
 
-The spawn egg's two colours are **not in Java**. 1.21.4's item model definitions moved spawn egg
-tinting out of `SpawnEggItem` and into
-[items/ore_lizard_spawn_egg.json](src/main/resources/assets/orelizards/items/ore_lizard_spawn_egg.json),
-which points at the old `models/item/ore_lizard_spawn_egg.json` and supplies the body/highlight as
-two `minecraft:constant` tints (signed ARGB ints, the way vanilla's own egg definitions are written).
-Delete or misname that file and the egg renders as the missing-model placeholder; the item's registry
-key (`Item.Properties.setId`) is what the client uses to find it.
+The spawn egg's two colours are constructor arguments on `SpawnEggItem`, exactly as on 1.20.1: the
+client tints the two layers of `models/item/ore_lizard_spawn_egg.json` (parent `template_spawn_egg`)
+through `ItemColors` → `SpawnEggItem.getColor`. There is deliberately **no**
+`assets/orelizards/items/ore_lizard_spawn_egg.json` on this branch — item model definitions are a
+1.21.4 addition; 1.21.3 has no `items/` folder and would silently ignore one. Going *up* to 1.21.4 is
+where the colours have to leave Java for that JSON (see the `1.21.4` branch); coming down to 1.21.3 is
+where they have to come back.
 
 The `shards` and `eyes` bones get a third, emissive pass through `RenderType.eyes` (vanilla's
 enderman/spider eye overlay type — coincidental name clash with our own `eyes` bone): fullbright and additive in vanilla, and mapped to `gbuffers_spidereyes` by
@@ -180,8 +181,9 @@ API dependency thinking the mod only uses it for biome spawns.
 
 - There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
   because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
-  GeckoLib 4.8.5 for 1.21.4 (like 4.9.2 for 1.21.1) has no `META-INF/jars/` at all and no mclib
-  references, so the workaround was dropped along with its `implementation files(...)` line. If a
+  GeckoLib 4.7.1 for 1.21.3 (like 4.8.5 for 1.21.4 and 4.9.2 for 1.21.1) has no `META-INF/jars/` at
+  all and no mclib references, so the workaround was dropped along with its `implementation files(...)`
+  line. If a
   future GeckoLib bump brings a nested jar back, `runClient`/`runServer` will fail with
   `NoClassDefFoundError` and the fix is the same extract-and-reference dance described on `main`.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
@@ -192,10 +194,12 @@ API dependency thinking the mod only uses it for biome spawns.
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
 
-## 1.21.4-specific API notes
+## 1.21.3-specific API notes
 
-Things that bit during the port (1.21.1 first, then 1.21.4 on top) and will bite again on any further
-bump. The 1.21.2–1.21.4 additions first:
+Things that bit during the port (1.21.1 first, then 1.21.4 on top of it, then this branch stepping back
+from 1.21.4 to 1.21.3) and will bite again on any further bump. 1.21.2 is the release that introduced
+nearly all of the 1.21.x churn, so the 1.21.4 notes apply here with one exception, flagged below. The
+1.21.2–1.21.3 additions first:
 
 - **`Entity.hurt` is final.** Override `hurtServer(ServerLevel, DamageSource, float)` instead — it is
   the server half of the dispatcher and the only place damage logic runs. `hurtClient` exists but is
@@ -203,15 +207,16 @@ bump. The 1.21.2–1.21.4 additions first:
 - **`Tier`/`Tiers` are gone; `PickaxeItem` is not (yet).** "Iron or better" is
   `stack.isCorrectToolForDrops(Blocks.DIAMOND_ORE.defaultBlockState())`, which reads the stack's `TOOL`
   component. 1.21.5 removes `PickaxeItem` too — the `instanceof` half becomes `stack.is(ItemTags.PICKAXES)`.
-- **`SpawnEggItem(EntityType, Item.Properties)` — no colours** — and every `Item.Properties` needs
-  `.setId(ResourceKey<Item>)` or the `Item` constructor throws. Colours go in the item model definition
-  (see *Variants and rendering*). `EntityType.Builder.build` likewise takes the
-  `ResourceKey<EntityType<?>>`, not a string.
+- **`SpawnEggItem(EntityType, int, int, Item.Properties)` still takes its two colours here** — the one
+  place 1.21.3 and 1.21.4 differ for this mod: 1.21.4 drops the ints and moves the colours into an item
+  model definition, which 1.21.3 does not have (see *Variants and rendering*). Every `Item.Properties`
+  does already need `.setId(ResourceKey<Item>)` or the `Item` constructor throws, and
+  `EntityType.Builder.build` likewise takes the `ResourceKey<EntityType<?>>`, not a string.
 - **`MobSpawnType` is `EntitySpawnReason`** (in `canSpawn`, `finalizeSpawn` and
   `SpawnPlacements.SpawnPredicate`). `spawnAtLocation` needs the `ServerLevel`, which
   `dropCustomDeathLoot` already receives.
-- **GeckoLib 4.8.5 (1.21.4): `GeoModel.getModelResource`/`getTextureResource` take
-  `(T, GeoRenderer<T>)`**; `getAnimationResource(T)` does not. Every `GeoRenderLayer` hook
+- **GeckoLib 4.7.1 (1.21.3), like 4.8.5 (1.21.4): `GeoModel.getModelResource`/`getTextureResource`
+  take `(T, GeoRenderer<T>)`**; `getAnimationResource(T)` does not. Every `GeoRenderLayer` hook
   (`preRender`, `renderForBone`, `render`) grew a trailing `int renderColor` — the renderer's own
   packed ARGB from `getRenderColor(...).argbInt()`. `OreTintLayer` ignores it on purpose (the variant
   tint is meant to multiply the texture as written). The hooks still receive the entity itself, not a
