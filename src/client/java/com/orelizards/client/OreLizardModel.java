@@ -10,6 +10,8 @@ public class OreLizardModel extends AnimatedGeoModel<OreLizardEntity> {
 			new ResourceLocation(OreLizardsMod.MOD_ID, "geo/entity/ore_lizard.geo.json");
 	private static final ResourceLocation TEXTURE =
 			new ResourceLocation(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard.png");
+	// Never selected on 1.16.5 - nothing here can set a lizard's deepslate flag - but kept, along
+	// with the texture itself, so the model reads the same as on the versions that have deepslate.
 	private static final ResourceLocation TEXTURE_DEEPSLATE =
 			new ResourceLocation(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard_deepslate.png");
 	private static final ResourceLocation ANIMATIONS =

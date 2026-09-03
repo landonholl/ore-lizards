@@ -6,7 +6,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.util.DefaultRandomPos;
+import net.minecraft.world.entity.ai.util.RandomPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.pathfinder.PathComputationType;
 import net.minecraft.world.phys.Vec3;
@@ -102,7 +102,10 @@ public class FleeAndBurrowGoal extends Goal {
 		if (!moving) {
 			// Nothing standable found, or nothing the pathfinder could reach. Running somewhere is
 			// always better than standing still, so fall back to vanilla's random flee pathing.
-			Vec3 anywhere = DefaultRandomPos.getPosAway(this.lizard, FALLBACK_RADIUS, FALLBACK_Y_RANGE,
+			// RandomPos.getPosAvoid is 1.16's name for what 1.17+ split out as
+			// DefaultRandomPos.getPosAway: ten random samples, kept only if they lead away from
+			// the given position and pass the mob's pathability filters.
+			Vec3 anywhere = RandomPos.getPosAvoid(this.lizard, FALLBACK_RADIUS, FALLBACK_Y_RANGE,
 					target.position());
 			if (anywhere != null) {
 				this.lizard.getNavigation().moveTo(anywhere.x, anywhere.y, anywhere.z, FLEE_SPEED);
@@ -122,10 +125,6 @@ public class FleeAndBurrowGoal extends Goal {
 	 * Candidates no further from the player than the lizard already is are rejected, so a direction
 	 * that curls back towards the player can never win.
 	 */
-	// hasChunksAt is @Deprecated in Mojang mappings, as is every other "is this chunk present"
-	// accessor on LevelReader; the only variants that aren't deprecated are the ones that force the
-	// chunk to load, which is exactly the thing being guarded against here. Nothing to migrate to.
-	@SuppressWarnings("deprecation")
 	@Nullable
 	private BlockPos findFurthestEscape(LivingEntity target) {
 		Level level = this.lizard.level;
@@ -145,7 +144,9 @@ public class FleeAndBurrowGoal extends Goal {
 				int x = origin.getX() + Math.round(dx * distance);
 				int z = origin.getZ() + Math.round(dz * distance);
 				// Never read through an unloaded chunk: Level.getBlockState would force it to load.
-				// This covers exactly the column findFloor reads.
+				// This covers exactly the column findFloor reads. (Later versions deprecate every
+				// "is this chunk present" accessor on LevelReader; 1.16.5's isn't, and there is
+				// nothing else to use either way.)
 				if (!level.hasChunksAt(x, origin.getY() - FLOOR_SEARCH_DOWN - 1, z,
 						x, origin.getY() + FLOOR_SEARCH_UP + 1, z)) {
 					continue;

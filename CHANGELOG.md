@@ -1,27 +1,60 @@
 # Changelog
 
-## 1.2.0+mc1.18.2
+## 1.2.0+mc1.16.5
 
-A port of 1.2.0 to Minecraft 1.18.2. The mob is meant to behave exactly as it does on 1.20.1; this
-section lists only what had to be done differently and why. The big one is the animation library:
-1.18.2 is served by GeckoLib **3.0.80**, an earlier API generation than the 4.8.4 the 1.20.1 build is
-written against, so everything that touches GeckoLib was re-implemented rather than translated.
+A port of 1.2.0 to Minecraft 1.16.5 - the oldest version the mod targets, and the one furthest
+from the 1.20.1 build on `main`. The mob is meant to behave exactly as it does there; this section
+lists only what had to be done differently and why. It is built on the 1.18.2 port (commit 50611fa),
+which had already re-implemented everything GeckoLib-facing against GeckoLib 3, and 1.16.5 is served
+by GeckoLib **3.0.107** - the same API generation - so that work carries over and was re-verified
+against 3.0.107's bytecode and bundled `core` sources rather than redone. Three things 1.16.5 simply
+does not have account for the rest: deepslate, raw ores and copper, and any Java newer than 8.
 
 ### Changed
 
-- **Holding the burrow pose is done with GeckoLib's bone reset speed, not a loop type.** GeckoLib
-  3.0.80 declares `HOLD_ON_LAST_FRAME` but never implements it: the enum constant is built with the
-  same `looping=false` flag as `PLAY_ONCE`, and neither `AnimationController` nor `AnimationProcessor`
+- **There are no deepslate lizards.** 1.16.5's world floors at Y=0 and is stone all the way down;
+  deepslate, its sounds and its texture arrive in 1.17/1.18. `finalizeSpawn` therefore no longer
+  attributes by `Y < -4` - every lizard is a stone lizard, rolled from the uniform variant table -
+  and the erupt/burrow, hurt and step sounds are `STONE_*` unconditionally, since `DEEPSLATE_*` does
+  not exist to fall back to. The `DEEPSLATE` tracked data, its `"Deepslate"` NBT key,
+  `isDeepslate()`, `OreVariant.randomDeepslate` and the deepslate texture are all kept as they are, so
+  the save format, the client's texture selection and the variant table read identically to every
+  other version; on this one the flag is simply never true, and `finalizeSpawn` sets it false
+  explicitly so spawn and load arrive at the same value by the same route.
+- **Iron and gold lizards drop ingots, and there is no copper lizard.** Raw ores and copper are 1.17
+  additions. `IRON` drops `IRON_INGOT` and `GOLD` drops `GOLD_INGOT` - what a furnace would have made
+  of the raw ore, and the nearest thing to "the metal, unrefined" that exists here - in the same 4-6
+  and 2-4 (2% for 6) counts as before. `COPPER` is removed from `OreVariant` outright, which leaves
+  seven variants in the uniform roll instead of eight. The tint colours are deliberately left as the
+  raw-block means measured for 1.20.1 rather than re-derived from the ingot textures, so an iron or
+  gold lizard is the same colour on every version. A save written by a later version that names
+  `COPPER` reads back through `OreVariant.byName` as unknown and keeps the default variant - the
+  existing rule for any unrecognised name, now with a concrete case.
+- **The spawn band is unchanged and still means something with a Y=0 floor.** `Y < 50` and "at least
+  8 below `WORLD_SURFACE`" carry over verbatim; the effective band is Y 0-49 instead of reaching
+  below zero, and `BASE_STONE_OVERWORLD` exists in 1.16 with the same members (stone, granite,
+  diorite, andesite). Nothing about the 70% roll, the AMBIENT category, the weight or the heightmap
+  changed.
+
+### Carried over from the 1.18.2 port
+
+These were worked out for GeckoLib 3.0.80 and hold unchanged for 3.0.107, whose `AnimationController`,
+`AnimationProcessor`, `ILoopType`, `GeoLayerRenderer` and `GeoEntityRenderer` behave the same way in
+every respect that matters here. Listed so this section is complete against `main` on its own.
+
+- **Holding the burrow pose is done with GeckoLib's bone reset speed, not a loop type.** GeckoLib 3
+  declares `HOLD_ON_LAST_FRAME` but never implements it: the enum constant is built with the same
+  `looping=false` flag as `PLAY_ONCE`, and neither `AnimationController` nor `AnimationProcessor`
   ever tests for it, so at the end of the 20-tick `burrow` clip the controller still stops and the
-  processor starts easing every bone back to its rest pose - over `AnimationData.resetTickLength`,
-  which defaults to a single tick. That is the 1.1.0 "lizard pops back above ground" bug all over
-  again. The port therefore leaves the loop type on the animations for intent and, while the lizard
-  is DIGGING_DOWN, sets the reset speed to 1200 ticks: the easing still begins the moment the clip
-  ends, but at 1/1200th of the way per tick the body has moved well under a percent of its two
-  blocks by the time the state discards the entity ten ticks later. Every other state puts the
-  default of 1 tick back before anything of its own can stop, and nothing follows DIGGING_DOWN, so
-  the slow reset cannot leak into the walk cycle. The `AnimationData` that owns the setting is the
-  one handed to `registerControllers`, which is captured into the predicate for the purpose.
+  processor starts easing every bone back to its rest pose over `AnimationData.resetTickLength`,
+  which defaults to a single tick - the 1.1.0 "lizard pops back above ground" bug all over again.
+  The loop type stays on the animations for intent and, while the lizard is DIGGING_DOWN, the reset
+  speed is set to 1200 ticks: the easing still begins the moment the clip ends, but at 1/1200th of
+  the way per tick the body has moved well under a percent of its two blocks by the time the state
+  removes the entity ten ticks later. Every other state puts the default of 1 tick back before
+  anything of its own can stop, and nothing follows DIGGING_DOWN, so the slow reset cannot leak into
+  the walk cycle. The `AnimationData` that owns the setting is the one handed to
+  `registerControllers`, which is captured into the predicate for the purpose.
 - **The tint and glow passes re-render the model with every other bone's cubes hidden.** A GeckoLib
   3 layer has no per-bone hook; its single `render` runs after the body has been written and can
   only draw the whole model again. So instead of capturing bone matrices during the body pass, the
@@ -33,53 +66,75 @@ written against, so everything that touches GeckoLib was re-implemented rather t
   transform, so no matrix bookkeeping is needed for the bones to land where the body pass put them.
   The rule about only requesting a different render type's buffer after the body pass is done still
   holds and is still why this lives in a layer rather than a `renderRecursively` override.
-- **The layer now checks `isInvisible()` itself, for both passes.** GeckoLib 4 skips the whole
-  render for an invisible entity, so on 1.20.1 the check was belt-and-braces. GeckoLib 3 instead
-  draws the body at alpha 0 (the cutout shader discards it) and then runs every layer regardless.
-  Both of the layer's passes draw at full alpha, so without the check a dormant lizard would show as
-  a floating, glowing set of shards - the one failure that breaks the mob outright.
+- **The layer checks `isInvisible()` itself, for both passes.** GeckoLib 4 skips the whole render
+  for an invisible entity, so on 1.20.1 the check was belt-and-braces. GeckoLib 3.0.107's
+  `GeoEntityRenderer.render` skips only the body pass for an entity invisible to the local player
+  (3.0.80 drew it at alpha 0 instead - same outcome) and then runs every layer regardless. Both of
+  the layer's passes draw at full alpha, so without the check a dormant lizard would show as a
+  floating, glowing set of shards - the one failure that breaks the mob outright.
 - **Spawn placement is declared on Fabric's entity type builder, not in `onInitialize`.**
-  `SpawnPlacements.register` is private in 1.18.2 (Mojang only opened it in 1.19), so the rule -
-  `ON_GROUND`, `MOTION_BLOCKING`, `OreLizardEntity::canSpawn`, unchanged - moved to
-  `FabricEntityTypeBuilder.createMob().spawnRestriction(...)` in `ModEntities`, which reaches the
+  `SpawnPlacements.register` is private in 1.16.5 as it is in 1.18.2 (Mojang only opened it in
+  1.19), so the rule - `ON_GROUND`, `MOTION_BLOCKING`, `OreLizardEntity::canSpawn`, unchanged - lives
+  on `FabricEntityTypeBuilder.createMob().spawnRestriction(...)` in `ModEntities`, which reaches the
   method through Fabric's accessor.
-- **The spawn egg sits in the Miscellaneous creative tab.** 1.18.2 has neither a Spawn Eggs tab nor
+- **The spawn egg sits in the Miscellaneous creative tab.** 1.16.5 has neither a Spawn Eggs tab nor
   the `ItemGroupEvents` API; vanilla's own eggs live in Miscellaneous, and an item names its tab on
   its `Item.Properties`.
-- **`fabric.mod.json` depends on `geckolib3`, not `geckolib`.** GeckoLib 3.x registers under the mod
-  id `geckolib3`; declaring `geckolib` would make Fabric Loader refuse to start. `minecraft` is
-  pinned to `1.18.2`, the only version GeckoLib 3.0.80 declares for itself.
+- **`fabric.mod.json` depends on `geckolib3`, not `geckolib`,** the mod id of the 3.x line;
+  declaring `geckolib` would make Fabric Loader refuse to start. `minecraft` is pinned to `1.16.5`
+  (GeckoLib 3.0.107 declares `1.16.x` for itself; this is the only one of those it was built and
+  tested against) and `java` to `>=8`.
 
 ### Build
 
-- **GeckoLib 3.0.x cannot be remapped to Mojang mappings as shipped, so `build.gradle` patches one
-  method out of it first.** `GeoProjectilesRenderer` declares both its own
-  `IGeoRenderer.getTextureLocation(Entity)` and an override of `EntityRenderer.getTextureLocation`
-  (intermediary `method_3931`). Yarn keeps those apart; Mojmap gives both the same name and
-  descriptor, which Tiny Remapper reports as an unfixable conflict and Loom aborts on ("Failed to
-  remap 48 mods"). Loom exposes no ignore-conflicts switch for dependency remapping, and its
-  `RemapperExtension` API loads extension classes through Loom's own classloader, where a class
-  defined in the build script is not visible. The override is a one-line delegate to the other
-  method, so `build.gradle` rewrites the Modrinth artifact with that single method removed, at
-  configuration time (Loom remaps mod dependencies while the project is configured), and points
-  `modImplementation` at the result under `.gradle/geckolib-mojmap/`. Once remapped the surviving
-  method *is* the override, so the class is unchanged in behaviour. The artifact is fetched by hand
-  (Gradle's module cache first, then the Modrinth maven) because resolving a configuration that
-  early freezes every repository descriptor and Loom then fails setting up its own. GeckoLib 3.1+
-  renamed the method to `getTextureResource`, so only 3.0.x needs this.
-- **`libs/mclib-20.jar` and its dependency line are gone.** GeckoLib 3.0.80 shades mclib into
-  `software.bernie.shadowed.eliotlash.mclib` and nothing in it references the copy it also nests as
-  `META-INF/jars/mclib-20.jar`, so the Loom jar-in-jar workaround the 1.20.1 build needs has nothing
-  to work around here.
+- **Java 8.** `build.gradle` compiles with `--release 8` and source/target 1.8, `fabric.mod.json`
+  asks for `java >=8`, and the (empty) mixin config is `JAVA_8`. The source was rewritten to Java 8
+  syntax with identical semantics: the `tick()` state `switch` is the classic `case:`/`break` form,
+  the `instanceof` patterns in `hurt`, `panicFromDamageIfDormant`, `isPickaxeHit` and the two
+  `ServerLevel` checks are explicit casts, and `OreTintLayer.GLOWING_BONES` is
+  `Collections.unmodifiableList(Arrays.asList(...))` in place of `List.of`. JDK 21's javac handles
+  `--release 8` with a warning that 8 is obsolete, which is expected.
+- **The two source sets are declared by hand; Loom's `splitEnvironmentSourceSets()` cannot be used.**
+  That call switches Loom to its split client-only/common Minecraft jars, which only exist for
+  versions that ship a bundled server jar (1.18+); on 1.16.5 Loom aborts setup with "Only Minecraft
+  versions using a bundled server jar can be split". `build.gradle` therefore creates the `client`
+  source set itself on top of the merged jar, mirroring what Loom's split mode does internally: it
+  compiles against `main`, is grouped with it as one mod, is packed into the jar and sources jar,
+  and `runClient` launches from it. The directory layout is unchanged. What is lost is only the
+  compile-time guarantee that `src/main` never touches a client class - the merged jar has them all -
+  so that rule is now kept by review.
+- **GeckoLib 3.0.x still needs its Mojmap patch, re-pointed at 3.0.107's package.** Same conflict as
+  on 1.18.2 - `GeoProjectilesRenderer` declares both `getTextureLocation(Entity)` and the
+  `EntityRenderer` override (intermediary `method_3931`) with descriptors that collide under Mojang
+  names - and the same fix: `build.gradle` fetches the Modrinth artifact and strips that one
+  delegating method with ASM at configuration time. But 3.0.107 keeps its renderers in
+  `software.bernie.geckolib3.renderer.geo` (singular) where 3.0.80 had `renderers.geo`, so the class
+  path the patch targets changed, as did every renderer import in `src/client`. Every class in that
+  package was checked: only `GeoProjectilesRenderer` collides (`GeoEntityRenderer`'s
+  `getTextureLocation(T)` erases to `LivingEntity` and so does not).
+- **`libs/mclib-20.jar` and its dependency line stay gone.** 3.0.107 shades mclib into
+  `software.bernie.shadowed.eliotlash.mclib` and nests no jar-in-jar copy at all.
+- **`fabric.mod.json` depends on `fabric`, not `fabric-api`.** Fabric API 0.42.0+1.16 registers
+  under the mod id `fabric`; the `fabric-api` id that every later version of the mod declares came
+  with a later Fabric API, and Fabric Loader refuses to start a mod whose declared dependency is
+  absent. The headless dedicated-server run caught this - the build itself cannot, since mod ids are
+  only checked at launch. (GeckoLib 3.0.107's own manifest depends on `fabric >=0.28.0`, which is the
+  same id.)
+- **Mechanical substitutions for APIs 1.16.5 lacks**, listed because the brief for this port asks for
+  them rather than because any changes behaviour: `Tag.TAG_STRING` (1.17+) is the literal `8`,
+  named `TAG_TYPE_STRING`; `Entity.discard()` is `remove()`; `DefaultRandomPos.getPosAway` is
+  `RandomPos.getPosAvoid` (same ten-random-samples fallback); `LightTexture.FULL_BRIGHT` is
+  `LightTexture.pack(15, 15)`; the logger is Log4j's, since Minecraft only ships SLF4J from 1.18;
+  and Fabric API 0.42's `EntityRendererRegistry` lives in `fabric-renderer-registries-v1` under
+  `net.fabricmc.fabric.api.client.rendereregistry.v1`, is instance-based, and hands the renderer an
+  `EntityRenderDispatcher` rather than a provider context.
 
 ### Not verified
 
-- Everything client-side was checked against GeckoLib's bytecode and bundled `core` sources, not in
-  a running client: the tint and emissive passes, the zero-tick transition (GeckoLib 3's
-  `MathUtil.lerpValues` returns the end value outright when the transition length is 0, so the first
-  frame shown is the clip's own first frame), and the reset-speed hold. The headless dedicated
-  server run covers registration, spawning, the state machine and drops only.
-
+- Everything client-side was checked against GeckoLib 3.0.107's bytecode and bundled `core` sources,
+  not in a running client: the tint and emissive passes, the zero-tick transition (`MathUtil.lerpValues`
+  returns the end value outright when the transition length is 0), and the reset-speed hold. The
+  headless dedicated server run covers registration, spawning, the state machine and drops only.
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it

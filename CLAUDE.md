@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.18.2 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.16.5 (Java 8, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 3.0.80 drives its model/animations. This is the
-1.18.2 port of the 1.20.1 build on `main` (GeckoLib 4.8.4); behaviour is meant to be identical, and
-the `## 1.2.0+mc1.18.2` section of [CHANGELOG.md](CHANGELOG.md) lists everything that differs and why.
+walks near, flees, then burrows back down. GeckoLib 3.0.107 drives its model/animations. This is the
+1.16.5 port of the 1.20.1 build on `main` (GeckoLib 4.8.4), built on top of the 1.18.2 port (which
+had already done the GeckoLib 3 work); behaviour is meant to be identical wherever 1.16.5 allows it,
+and the `## 1.2.0+mc1.16.5` section of [CHANGELOG.md](CHANGELOG.md) lists everything that differs
+and why. The three things 1.16.5 lacks outright are deepslate, raw ores/copper, and Java 9+.
 
 ## Commands
 
@@ -21,11 +23,21 @@ the `## 1.2.0+mc1.18.2` section of [CHANGELOG.md](CHANGELOG.md) lists everything
 
 There is no test source set and no linter configured — verification is done by running the client
 and playing. Use `/summon orelizards:ore_lizard` for a raw spawn, or the spawn egg (Miscellaneous
-creative tab — 1.18.2 has no Spawn Eggs tab) when you need `finalizeSpawn` to run (variant
-assignment, deepslate attribution, dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards
-are *not* representative.
+creative tab — 1.16.5 has no Spawn Eggs tab) when you need `finalizeSpawn` to run (variant
+assignment, dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards are *not* representative.
 
 Dependency versions live in [gradle.properties](gradle.properties), not `build.gradle`.
+
+Loom launches `runServer`/`runClient` with the Gradle JVM (no toolchain is configured). The 1.16.5
+dedicated server boots and runs fine on JDK 21 that way — the game's Java 8 target only concerns
+what the mod is compiled to, not what runs it — so no separate old JDK is needed for a smoke test.
+Expect one line of log4j noise at startup (`Error processing element Queue ... CLASS_NOT_FOUND`);
+it is vanilla's dev log config looking for `QueueLogAppender`, not the mod.
+
+**The source is Java 8.** `build.gradle` compiles with `--release 8` (JDK 21's javac does this, with
+a warning that 8 is obsolete). No `switch ->`, no `instanceof` patterns, no records, no `var`, no
+`List.of`/`Map.of` (use `Arrays.asList`/`Collections.unmodifiableList`), no `String.repeat`, no
+`Optional.isEmpty`. The state `switch` in `tick()` is the classic `case:`/`break` form for this reason.
 
 ## Architecture
 
@@ -41,8 +53,9 @@ at runtime.
 ### The state machine
 
 [OreLizardEntity](src/main/java/com/orelizards/entity/OreLizardEntity.java) is the whole mob.
-`State` (BURIED → ERUPTING → FLEEING → DIGGING_DOWN → discard) is advanced by a `switch` in
+`State` (BURIED → ERUPTING → FLEEING → DIGGING_DOWN → remove) is advanced by a `switch` in
 `tick()` that returns early on the client, with per-state tick methods and a `stateTimer` countdown.
+(1.16.5 has `Entity.remove()` where later versions have `discard()`; same thing.)
 [FleeAndBurrowGoal](src/main/java/com/orelizards/entity/ai/FleeAndBurrowGoal.java) only does
 pathing; it reads `isFleeing()`/`getFleeTarget()` and never mutates state. Where it flees *to* is
 its own deterministic sweep: 16 directions, outermost ring inwards, first standable column per
@@ -50,10 +63,11 @@ direction, furthest from the player wins.
 
 Two constraints that shaped this and are easy to trip over again:
 
-- **`DefaultRandomPos.getPosAway` cannot express a destination preference.** It draws ten *random*
-  samples and discards any failing its pathability filters, so what survives is dictated by terrain,
-  not by whatever you tried to rank on. It was tried for a darkness preference and could not deliver
-  one at any weighting. It remains only as a fallback for when the sweep finds nothing reachable.
+- **`RandomPos.getPosAvoid` (1.17+: `DefaultRandomPos.getPosAway`) cannot express a destination
+  preference.** It draws ten *random* samples and discards any failing its pathability filters, so
+  what survives is dictated by terrain, not by whatever you tried to rank on. It was tried for a
+  darkness preference and could not deliver one at any weighting. It remains only as a fallback for
+  when the sweep finds nothing reachable.
 - **Don't aim further than about 12 blocks.** A mob's A* only expands nodes within `FOLLOW_RANGE`
   (16, Manhattan) and stops after `FOLLOW_RANGE * 16` = 256 nodes, so a more distant target burns the
   whole node budget and yields a partial path anyway. Range comes from repathing often, not from a
@@ -71,7 +85,16 @@ its `defineSynchedData` default on the next chunk reload. `ORE_VARIANT` and `DEE
 for exactly this reason, by enum *name* so the save format survives reordering the enum. `STATE` is
 deliberately not persisted: `fleeTarget` is a live entity reference that can't be saved, so a reload
 always returns the lizard to BURIED via `becomeDormant()` rather than resuming a flee it has nothing
-to flee from.
+to flee from. (1.16.5's `Tag` interface has no `TAG_STRING`; the string type id is the literal `8`,
+named `TAG_TYPE_STRING` in the entity.)
+
+**`DEEPSLATE` is plumbing only on this version.** 1.16.5 has no deepslate — the world floors at Y=0
+and is stone throughout — so `finalizeSpawn` always sets the flag false and rolls the uniform
+variant table; the `Y < -4` attribution and `OreVariant.randomDeepslate` that the 1.18+ builds use are
+not called. The tracked data, NBT key, `isDeepslate()`, the deepslate texture and the weighted table
+are all kept so the save format and the client code read the same on every version. Don't remove
+them, and don't make anything here able to set the flag true: there are no `DEEPSLATE_*` sounds to
+play for it.
 
 **Only an activation may leave BURIED.** `beginErupting` and `beginFleeing` both take the entity
 being fled from as a parameter, which is what makes "activated" and "has a flee target" the same
@@ -90,23 +113,27 @@ invisible flag from potion effects every tick and would wipe our dormancy), `isI
 (suffocation exemption except while FLEEING), `isPushable`, and `checkDespawn` (interval-gated,
 never despawns while the nearest player is still underground; dormant lizards are additionally safe
 within 128 blocks of any player and removed outright beyond it, and an activated one never despawns
-at all since it discards itself at the end of DIGGING_DOWN).
+at all since it removes itself at the end of DIGGING_DOWN).
 
 ### Variants and rendering
 
 [OreVariant](src/main/java/com/orelizards/entity/OreVariant.java) is the source of truth for tint
-color, drop item, deepslate spawn weight, and drop-count tier. One shared texture pair (stone / deepslate) covers
-every ore type; [OreTintLayer](src/client/java/com/orelizards/client/OreTintLayer.java) re-draws
-only the `shards` and `eyes` bones with the variant color on top of the base pass. Adding a variant
-means adding an enum constant — no new textures, no renderer changes. Drop counts come from the
-nested `DropTier` (bulk ores 4-6; gold/diamond/emerald 2-4 with a 2% roll for 6), so a new variant
-just names its tier.
+color, drop item, deepslate spawn weight, and drop-count tier. One shared texture pair (stone /
+deepslate — only stone is ever selected on 1.16.5) covers every ore type;
+[OreTintLayer](src/client/java/com/orelizards/client/OreTintLayer.java) re-draws only the `shards`
+and `eyes` bones with the variant color on top of the base pass. Adding a variant means adding an
+enum constant — no new textures, no renderer changes. Drop counts come from the nested `DropTier`
+(bulk ores 4-6; gold/diamond/emerald 2-4 with a 2% roll for 6), so a new variant just names its tier.
+There is no `COPPER` here (copper is 1.17+), and `IRON`/`GOLD` drop ingots because raw ores are too;
+their tints are still the raw-block means from `main` so the colours match across versions.
 
 The `shards` and `eyes` bones get a third, emissive pass through `RenderType.eyes` (vanilla's
 enderman/spider eye overlay type — coincidental name clash with our own `eyes` bone): fullbright and additive in vanilla, and mapped to `gbuffers_spidereyes` by
 Iris/OptiFine so shader packs treat it as emissive. Deliberately *not* GeckoLib's
 `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask` texture and a custom render type that
 shader packs have no convention for. The pass is skipped for invisible (dormant) lizards.
+`LightTexture.FULL_BRIGHT` doesn't exist in 1.16.5; the layer packs it itself as
+`LightTexture.pack(15, 15)`.
 
 **How a GeckoLib 3 layer draws only two bones.** A `GeoLayerRenderer` has no per-bone hook; its
 single `render` runs after the body has been written and re-renders the *whole* model. So
@@ -124,11 +151,12 @@ builder under the new type, so every bone drawn *after* that one inherits it —
 glow passes live in a layer, which GeckoLib 3 invokes after `render` has finished the body, and not
 in an override of `renderRecursively`.
 
-**GeckoLib 3 runs layers for invisible entities.** `GeoEntityRenderer.render` draws the body at
-alpha 0 when the entity is invisible to the local player (the cutout shader discards it) and then
-runs every layer anyway — there is no upstream skip like GeckoLib 4's. `OreTintLayer.render` returns
-early on `isInvisible()` for that reason, and it is not optional: both of its passes draw at full
-alpha, so a dormant lizard would otherwise show as a floating, glowing set of shards.
+**GeckoLib 3 runs layers for invisible entities.** `GeoEntityRenderer.render` in 3.0.107 skips the
+body pass when the entity is invisible to the local player and then runs every layer anyway (3.0.80
+drew the body at alpha 0 instead; same outcome) — there is no upstream skip like GeckoLib 4's.
+`OreTintLayer.render` returns early on `isInvisible()` for that reason, and it is not optional: both
+of its passes draw at full alpha, so a dormant lizard would otherwise show as a floating, glowing
+set of shards.
 
 ### GeckoLib asset contract
 
@@ -157,13 +185,14 @@ GeckoLib 3 timing rules this mob depends on:
   into position first. `transitionLengthTicks` is a public field on the controller in GeckoLib 3.
   A zero-length transition is safe: `MathUtil.lerpValues` returns the end value outright when the
   transition length is 0, so the frame shown is the clip's own first frame.
-- **`HOLD_ON_LAST_FRAME` is declared but inert in 3.0.80.** It is constructed with the same
-  `looping=false` flag as `PLAY_ONCE` and nothing in `AnimationController`/`AnimationProcessor`
-  tests for it, so a finished one-shot stops its controller and the processor eases every bone back
-  to rest over `AnimationData.resetTickLength` (default 1 tick). The burrow pose is held by setting
-  that reset speed to 1200 ticks while DIGGING_DOWN (`HOLD_RESET_TICKS` in `OreLizardEntity`) and
-  back to 1 in every other state; the `AnimationData` handed to `registerControllers` is captured
-  into the predicate for that. Do not "simplify" this back to a loop type.
+- **`HOLD_ON_LAST_FRAME` is declared but inert in 3.0.107** (as in 3.0.80). It is constructed with
+  the same `looping=false` flag as `PLAY_ONCE` and nothing in `AnimationController`/
+  `AnimationProcessor` tests for it, so a finished one-shot stops its controller and the processor
+  eases every bone back to rest over `AnimationData.resetTickLength` (default 1 tick). The burrow
+  pose is held by setting that reset speed to 1200 ticks while DIGGING_DOWN (`HOLD_RESET_TICKS` in
+  `OreLizardEntity`) and back to 1 in every other state; the `AnimationData` handed to
+  `registerControllers` is captured into the predicate for that. Do not "simplify" this back to a
+  loop type.
 
 ## Spawning
 
@@ -175,12 +204,13 @@ plus a 30% rejection roll inside `canSpawn` because spawn weights are integers a
 
 The placement rule (`ON_GROUND`, `MOTION_BLOCKING`, `OreLizardEntity::canSpawn`) is declared on
 `FabricEntityTypeBuilder.createMob().spawnRestriction(...)` because `SpawnPlacements.register` is
-private in 1.18.2; Fabric's builder reaches it through an accessor.
+private in 1.16.5 (Mojang opened it in 1.19); Fabric's builder reaches it through an accessor.
 
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
-`BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
-during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band), not by sampling blocks.
+`BASE_STONE_OVERWORLD` (the tag exists in 1.16). Depth-below-surface is used rather than a light
+check because it works during worldgen before lighting exists and ignores player torches. Both
+rules are still meaningful with 1.16.5's Y=0 floor — the band is just Y 0–49 instead of reaching
+below zero. There is no stone-vs-deepslate decision on this version (see `DEEPSLATE` above).
 
 ## Repo gotchas
 
@@ -194,16 +224,27 @@ by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band), not by sam
   configuration (resolving one that early breaks Loom's repository setup) or Loom's
   `RemapperExtension` API (Loom loads those via its own classloader, which can't see build-script
   classes).
-- `fabric.mod.json` depends on `geckolib3` — the mod id of the 3.x line — not `geckolib`.
-- There is no `libs/mclib-20.jar` here, unlike `main`: GeckoLib 3.0.80 shades mclib into
-  `software.bernie.shadowed.eliotlash.mclib` and never references the copy it also nests, so the
-  jar-in-jar workaround has nothing to work around.
+- **3.0.107's renderer package is `software.bernie.geckolib3.renderer.geo` — singular.** 3.0.80 (the
+  1.18.2 build) has `renderers.geo`. Both the ASM patch's class path and every renderer import in
+  `src/client` depend on it; if you copy code from the 1.18.2 branch, fix the imports.
+- `fabric.mod.json` depends on `geckolib3` — the mod id of the 3.x line — not `geckolib`, and on
+  `fabric` — the mod id Fabric API 0.42 registers under — not `fabric-api`. Loader checks both only
+  at launch, so a wrong id builds fine and then refuses to start; `runServer` is the cheapest check.
+- There is no `libs/mclib-20.jar` here, unlike `main`: GeckoLib 3.0.107 shades mclib into
+  `software.bernie.shadowed.eliotlash.mclib` and nests no jar-in-jar copy at all, so the Loom
+  workaround has nothing to work around.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
 - GeckoLib 3's example mod is enabled in dev unless `-Dgeckolib.disable_examples` is set; it
   registers a handful of example entities/items. Harmless, but don't mistake them for ours.
+- **1.16.5 has no SLF4J.** `OreLizardsMod.LOGGER` is a Log4j `Logger` (`LogManager.getLogger`);
+  Minecraft only started shipping SLF4J in 1.18.
+- **Fabric API 0.42's `EntityRendererRegistry` is in module `fabric-renderer-registries-v1`**, package
+  `net.fabricmc.fabric.api.client.rendereregistry.v1` (the missing "r" is Fabric's), and is
+  instance-based: `INSTANCE.register(type, (dispatcher, context) -> new Renderer(dispatcher))`. A
+  1.16 `GeoEntityRenderer` is constructed from an `EntityRenderDispatcher`, not a provider context.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
   remote. Ignore it; don't edit anything inside it.
-- `orelizards.mixins.json` is wired up but has no mixins yet.
+- `orelizards.mixins.json` is wired up but has no mixins yet (`compatibilityLevel` is `JAVA_8`).
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.

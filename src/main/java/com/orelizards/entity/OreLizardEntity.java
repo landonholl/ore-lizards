@@ -5,7 +5,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -15,6 +14,7 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.entity.LivingEntity;
@@ -29,6 +29,7 @@ import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.PickaxeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Tier;
@@ -63,6 +64,9 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 
 	private static final EntityDataAccessor<Integer> ORE_VARIANT =
 			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.INT);
+	// 1.16.5 has no deepslate, so nothing on this version ever sets this to true: every lizard is a
+	// stone lizard. The tracked data, its NBT key and isDeepslate() are all kept regardless, so the
+	// save format and the client-side texture choice stay identical to the versions that do have it.
 	private static final EntityDataAccessor<Boolean> DEEPSLATE =
 			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.BOOLEAN);
 	// Synced so the client's own copy of the entity (which is what AnimationController actually
@@ -81,6 +85,9 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	// State deliberately isn't saved - see readAdditionalSaveData.
 	private static final String TAG_ORE_VARIANT = "OreVariant";
 	private static final String TAG_DEEPSLATE = "Deepslate";
+	// NBT type id of a string tag. 1.16.5's Tag interface has no TAG_STRING constant (Mojang added
+	// the named ids in 1.17), so this is the literal from the NBT spec that later versions name.
+	private static final int TAG_TYPE_STRING = 8;
 
 	private static final UUID FLEE_SPEED_MODIFIER_ID = UUID.fromString("6f6a1f0a-6b6a-4e2b-9b8c-6f2e3a9d1a10");
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
@@ -94,7 +101,7 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	// but the same treatment removes any chance of a one-tick flicker between it finishing and
 	// FLEEING.
 	//
-	// GeckoLib 3.0.80 declares HOLD_ON_LAST_FRAME but does not implement it: it is constructed with
+	// GeckoLib 3.0.107 declares HOLD_ON_LAST_FRAME but does not implement it: it is constructed with
 	// the same looping=false flag as PLAY_ONCE and nothing in AnimationController or
 	// AnimationProcessor ever tests for it, so at the end of the clip the controller still goes to
 	// Stopped and the processor starts easing every bone back towards its rest pose. The loop type
@@ -118,15 +125,11 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	private static final double DEFAULT_RESET_TICKS = 1.0;
 	private static final double HOLD_RESET_TICKS = 1200.0;
 
-	// Spawn band: high enough to reach the stone layer (deepslate takes over below Y=-8), but
-	// still required to sit well under the terrain surface so it stays a cave mob.
+	// Spawn band: the whole stone layer, but still required to sit well under the terrain surface
+	// so it stays a cave mob. 1.16.5's world floors at Y=0 and is stone all the way down, so unlike
+	// 1.18+ there is no deepslate band to attribute a lizard to - every spawn is a stone lizard.
 	private static final int MAX_SPAWN_Y = 50;
 	private static final int MIN_DEPTH_BELOW_SURFACE = 8;
-	// 1.18+ worldgen replaces stone with deepslate entirely below Y=-8, blending randomly from
-	// Y=0 down. -4 is the midpoint of that band, so it's the closest single threshold to what the
-	// surrounding rock actually looks like - and it's the rule that drives the distribution in the
-	// first place, so reading it directly beats sampling blocks at spawn time.
-	private static final int DEEPSLATE_Y_LEVEL = -4;
 
 	// Spawn attempts that pass every other rule still fail 30% of the time, trimming the rate
 	// without needing a fractional spawn weight (weights are ints, and ours is already at 1).
@@ -204,11 +207,11 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
 		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
 		//
-		// The old "Y < 0" rule made stone lizards unreachable: 1.18+ worldgen fully replaces
-		// stone with deepslate below Y=-8 (blending from Y=0 down), so every natural spawn landed
-		// on deepslate. The ceiling now reaches up into the stone band instead. Depth-below-
-		// surface (rather than a light check) is what keeps it genuinely underground, since it
-		// works during worldgen when lighting isn't computed yet and ignores player torches.
+		// The ceiling reaches up into the stone band rather than stopping at Y=0 (on 1.18+ that
+		// rule is what keeps the stone variant reachable at all; here it simply means the mob is
+		// found throughout the cave layer rather than only near bedrock). Depth-below-surface
+		// (rather than a light check) is what keeps it genuinely underground, since it works
+		// during worldgen when lighting isn't computed yet and ignores player torches.
 		// Cheapest gate first so the majority of rejected attempts never reach the heightmap lookup.
 		return random.nextInt(100) < SPAWN_CHANCE_PERCENT
 				&& pos.getY() < MAX_SPAWN_Y
@@ -273,7 +276,9 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 			return;
 		}
 
-		this.discard();
+		// 1.16.5's Entity.remove() is what later versions split into discard(): the plain
+		// "delete this entity" removal, as opposed to a death or a dimension change.
+		this.remove();
 	}
 
 	@Override
@@ -287,9 +292,13 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	@Override
 	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType,
 			@Nullable SpawnGroupData spawnGroupData, @Nullable CompoundTag dataTag) {
-		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
-		this.setDeepslate(deepslate);
-		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
+		// On 1.18+ this is where a lizard below Y=-4 becomes a deepslate lizard, with the deepslate
+		// texture, sounds and the diamond/emerald-heavy variant table. 1.16.5 has no deepslate and
+		// its world floors at Y=0, so there is nothing to attribute: every lizard is a stone one and
+		// rolls the uniform table. The flag is still set explicitly so spawn and load land on the
+		// same value by the same route.
+		this.setDeepslate(false);
+		this.setOreVariant(OreVariant.random(this.random));
 		this.becomeDormant();
 		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData, dataTag);
 	}
@@ -318,7 +327,7 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	@Override
 	public void readAdditionalSaveData(CompoundTag tag) {
 		super.readAdditionalSaveData(tag);
-		if (tag.contains(TAG_ORE_VARIANT, Tag.TAG_STRING)) {
+		if (tag.contains(TAG_ORE_VARIANT, TAG_TYPE_STRING)) {
 			OreVariant variant = OreVariant.byName(tag.getString(TAG_ORE_VARIANT));
 			if (variant != null) {
 				this.setOreVariant(variant);
@@ -369,10 +378,18 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 		}
 		this.emitSparkTrail();
 		switch (this.getLizardState()) {
-			case BURIED -> this.tickBuried();
-			case ERUPTING -> this.tickErupting();
-			case FLEEING -> this.tickFleeing();
-			case DIGGING_DOWN -> this.tickDiggingDown();
+			case BURIED:
+				this.tickBuried();
+				break;
+			case ERUPTING:
+				this.tickErupting();
+				break;
+			case FLEEING:
+				this.tickFleeing();
+				break;
+			case DIGGING_DOWN:
+				this.tickDiggingDown();
+				break;
 		}
 	}
 
@@ -388,9 +405,10 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 		if (this.getLizardState() == State.BURIED || this.tickCount % SPARK_INTERVAL_TICKS != 0) {
 			return;
 		}
-		if (!(this.level instanceof ServerLevel serverLevel)) {
+		if (!(this.level instanceof ServerLevel)) {
 			return;
 		}
+		ServerLevel serverLevel = (ServerLevel) this.level;
 		// Zero speed: the sparks are left hanging where the lizard was rather than being thrown, so
 		// the trail marks its actual path. FireworkParticles fade and twinkle out on their own.
 		serverLevel.sendParticles(ParticleTypes.FIREWORK, this.getX(), this.getY() + SPARK_Y_OFFSET, this.getZ(),
@@ -440,7 +458,7 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 		this.stateTimer--;
 		if (this.stateTimer <= 0) {
 			this.spawnBurstParticles();
-			this.discard();
+			this.remove();
 		}
 	}
 
@@ -508,10 +526,14 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	}
 
 	private void spawnBurstParticles() {
-		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_BREAK : SoundEvents.STONE_BREAK, 1.0F, 1.0F);
-		if (!(this.level instanceof ServerLevel serverLevel)) {
+		// Stone only: 1.16.5 has no deepslate and therefore no DEEPSLATE_BREAK sound (nor could
+		// isDeepslate() be true here - see DEEPSLATE). The particles still sample the real block
+		// below, so a lizard sitting on andesite or tuff-free granite dusts in that block's colour.
+		this.playSound(SoundEvents.STONE_BREAK, 1.0F, 1.0F);
+		if (!(this.level instanceof ServerLevel)) {
 			return;
 		}
+		ServerLevel serverLevel = (ServerLevel) this.level;
 		BlockState blockState = this.level.getBlockState(this.blockPosition().below());
 		serverLevel.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, blockState),
 				this.getX(), this.getY() + 0.5, this.getZ(), 20, 0.3, 0.3, 0.3, 0.05);
@@ -519,7 +541,8 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 
 	@Override
 	public boolean hurt(DamageSource source, float amount) {
-		if (source.getEntity() instanceof Player player && (player.isCreative() || player.isSpectator())) {
+		Entity attacker = source.getEntity();
+		if (attacker instanceof Player && (((Player) attacker).isCreative() || attacker.isSpectator())) {
 			return false;
 		}
 		this.panicFromDamageIfDormant(source);
@@ -540,25 +563,26 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 
 	@Override
 	protected SoundEvent getHurtSound(DamageSource damageSource) {
-		return this.isDeepslate() ? SoundEvents.DEEPSLATE_HIT : SoundEvents.STONE_HIT;
+		// Stone only - 1.16.5 has no DEEPSLATE_HIT, and no lizard here is a deepslate one anyway.
+		return SoundEvents.STONE_HIT;
 	}
 
 	/**
 	 * The scuttle sound. Vanilla calls this from {@code Entity.move()} paced by distance
 	 * travelled, so it automatically speeds up with the 1.925x flee boost rather than needing its
-	 * own timer. Stone/deepslate to match its body, pitched well up so it reads as a small
-	 * skittering critter rather than something heavy walking.
+	 * own timer. Stone to match its body (1.16.5 has no deepslate step sound to pick instead),
+	 * pitched well up so it reads as a small skittering critter rather than something heavy walking.
 	 */
 	@Override
 	protected void playStepSound(BlockPos pos, BlockState state) {
-		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_STEP : SoundEvents.STONE_STEP, 0.18F, 1.6F);
+		this.playSound(SoundEvents.STONE_STEP, 0.18F, 1.6F);
 	}
 
 	/**
 	 * Vanilla suffocates any living entity whose hitbox overlaps a solid block each tick - fine
-	 * for normal mobs, but ours is meant to sit embedded in stone/deepslate while dormant and sink
-	 * back into it while burrowing down, so it needs to be exempt during those phases. Only
-	 * FLEEING (out in open cave air) keeps the normal vanilla check as a safety net.
+	 * for normal mobs, but ours is meant to sit embedded in stone while dormant and sink back into
+	 * it while burrowing down, so it needs to be exempt during those phases. Only FLEEING (out in
+	 * open cave air) keeps the normal vanilla check as a safety net.
 	 */
 	@Override
 	public boolean isInWall() {
@@ -607,7 +631,8 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 			return;
 		}
 
-		LivingEntity threat = source.getEntity() instanceof LivingEntity attacker ? attacker : null;
+		Entity attacker = source.getEntity();
+		LivingEntity threat = attacker instanceof LivingEntity ? (LivingEntity) attacker : null;
 		if (threat == null) {
 			// Environmental damage - lava, a falling block, a hit from something with no owner.
 			// There is usually still a player behind it, so run from the nearest one if there is any.
@@ -624,14 +649,16 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	}
 
 	private boolean isPickaxeHit(DamageSource source) {
-		if (!(source.getEntity() instanceof Player player)) {
+		Entity attacker = source.getEntity();
+		if (!(attacker instanceof Player)) {
 			return false;
 		}
-		ItemStack weapon = player.getMainHandItem();
-		if (!(weapon.getItem() instanceof PickaxeItem pickaxe)) {
+		ItemStack weapon = ((Player) attacker).getMainHandItem();
+		Item item = weapon.getItem();
+		if (!(item instanceof PickaxeItem)) {
 			return false;
 		}
-		Tier tier = pickaxe.getTier();
+		Tier tier = ((PickaxeItem) item).getTier();
 		return tier == Tiers.IRON || tier == Tiers.DIAMOND || tier == Tiers.NETHERITE;
 	}
 

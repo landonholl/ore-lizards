@@ -24,15 +24,39 @@ repositories {
 	}
 }
 
-loom {
-	splitEnvironmentSourceSets()
+// Loom's splitEnvironmentSourceSets() - what main and the 1.18+ ports use - cannot be used on 1.16.5.
+// It switches Loom to its split client-only/common Minecraft jars, which only exist for versions
+// that ship a bundled server jar (1.18+); on anything older Loom aborts setup with "Only Minecraft
+// versions using a bundled server jar can be split". So the same two source sets are declared by
+// hand on top of the merged jar, mirroring what Loom's split mode does internally: the layout
+// (src/main/java, src/client/java) and the single-mod grouping are unchanged, the client set
+// compiles against main and rides along in the jar, and runClient launches from it. The one thing
+// lost is the compile-time guarantee that src/main never touches a client class - the merged jar
+// has them all - so that rule is now kept by hand (see CLAUDE.md).
+sourceSets {
+	client {
+		compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+		runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+	}
+}
 
+loom {
 	mods {
 		orelizards {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
 	}
+
+	runs {
+		client {
+			source sourceSets.client
+		}
+	}
+}
+
+jar {
+	from sourceSets.client.output
 }
 
 // GeckoLib 3.0.x cannot be remapped to Mojang mappings as shipped. GeoProjectilesRenderer declares
@@ -99,7 +123,7 @@ def geckolibMojmapJar = { ->
 			raw.bytes = new URI(url).toURL().bytes
 		}
 	}
-	String conflictingClass = 'software/bernie/geckolib3/renderers/geo/GeoProjectilesRenderer.class'
+	String conflictingClass = 'software/bernie/geckolib3/renderer/geo/GeoProjectilesRenderer.class'
 	String conflictingMethod = 'method_3931'
 	String conflictingDescriptor = '(Lnet/minecraft/class_1297;)Lnet/minecraft/class_2960;'
 	File tmp = new File(out.parentFile, out.name + '.tmp')
@@ -140,8 +164,8 @@ dependencies {
 	// the coordinate in gradle.properties, then patched for Mojang mappings - see geckolibMojmapJar.
 	modImplementation files(geckolibMojmapJar())
 
-	// GeckoLib 3.0.80 shades mclib into software.bernie.shadowed.eliotlash.mclib and nothing in it
-	// references the copy it also nests as META-INF/jars/mclib-20.jar, so the libs/mclib-20.jar
+	// GeckoLib 3.0.107 shades mclib into software.bernie.shadowed.eliotlash.mclib and, unlike the 4.x
+	// line, nests no jar-in-jar copy of it at all (META-INF/jars is absent), so the libs/mclib-20.jar
 	// workaround the 1.20.1 build needs does not apply here.
 }
 
@@ -154,12 +178,17 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 17
+	it.options.release = 8
 }
 
 java {
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_17
-	targetCompatibility = JavaVersion.VERSION_17
+	sourceCompatibility = JavaVersion.VERSION_1_8
+	targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+// Created by withSourcesJar() above, so it can only be configured after that call.
+sourcesJar {
+	from sourceSets.client.allSource
 }

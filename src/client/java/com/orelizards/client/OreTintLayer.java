@@ -10,9 +10,11 @@ import net.minecraft.resources.ResourceLocation;
 import software.bernie.geckolib3.geo.render.built.GeoBone;
 import software.bernie.geckolib3.geo.render.built.GeoModel;
 import software.bernie.geckolib3.model.provider.GeoModelProvider;
-import software.bernie.geckolib3.renderers.geo.GeoLayerRenderer;
-import software.bernie.geckolib3.renderers.geo.IGeoRenderer;
+import software.bernie.geckolib3.renderer.geo.GeoLayerRenderer;
+import software.bernie.geckolib3.renderer.geo.IGeoRenderer;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -45,7 +47,8 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 	private static final String EYES_BONE = "eyes";
 
 	/** Bones that get the variant tint and the emissive pass. */
-	private static final List<String> GLOWING_BONES = List.of(SHARDS_BONE, EYES_BONE);
+	private static final List<String> GLOWING_BONES =
+			Collections.unmodifiableList(Arrays.asList(SHARDS_BONE, EYES_BONE));
 
 	/**
 	 * Scales the additive glow pass. The emissive pass adds the variant color on top of the
@@ -56,6 +59,14 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 	 */
 	private static final float GLOW_STRENGTH = 0.7F;
 
+	/**
+	 * Maximum block light and sky light packed the way the lightmap wants them. 1.17 named this
+	 * {@code LightTexture.FULL_BRIGHT}; 1.16.5 only has the packer, so it is spelled out here. The
+	 * eyes shader never samples the lightmap anyway, so this is belt-and-braces for the pass being
+	 * fullbright and matters only to anything that does read the light argument.
+	 */
+	private static final int FULL_BRIGHT = LightTexture.pack(15, 15);
+
 	public OreTintLayer(IGeoRenderer<OreLizardEntity> renderer) {
 		super(renderer);
 	}
@@ -65,8 +76,8 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 			float limbSwing, float limbSwingAmount, float partialTick, float ageInTicks, float netHeadYaw, float headPitch) {
 		// A dormant lizard is meant to be undetectable, and a glow is exactly the thing that would
 		// give it away. GeckoLib 3 offers no help here: unlike 4.x, which skips the whole render
-		// for an invisible entity, it draws the body itself at alpha 0 (the cutout shader discards
-		// it) and then runs the layers regardless. Both passes below draw at full alpha, so
+		// for an invisible entity, 3.0.107 skips only the body pass for one invisible to the local
+		// player and then runs every layer regardless. Both passes below draw at full alpha, so
 		// without this check a buried lizard would show as a floating, glowing set of shards -
 		// the one failure that breaks the core mechanic outright.
 		if (animatable.isInvisible()) {
@@ -125,7 +136,7 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 			int packedOverlay, float red, float green, float blue) {
 		RenderType emissiveType = RenderType.eyes(texture);
 		renderer.render(model, animatable, partialTick, emissiveType, poseStack, bufferSource,
-				bufferSource.getBuffer(emissiveType), LightTexture.FULL_BRIGHT, packedOverlay,
+				bufferSource.getBuffer(emissiveType), FULL_BRIGHT, packedOverlay,
 				red * GLOW_STRENGTH, green * GLOW_STRENGTH, blue * GLOW_STRENGTH, 1.0F);
 	}
 
