@@ -25,7 +25,7 @@ public final class ModEntities {
 					.entityFactory(OreLizardEntity::new)
 					.dimensions(EntityDimensions.scalable(0.9F, 0.6F))
 					.trackRangeChunks(8)
-					// SpawnPlacements.register is private in 1.18.2 (Mojang only opened it up in
+					// SpawnPlacements.register is private in 1.17.1 (Mojang only opened it up in
 					// 1.19), so the placement rule is declared here on Fabric's mob builder, which
 					// reaches it through an accessor, instead of in OreLizardsMod.onInitialize.
 					// Same rule as before: ON_GROUND, and the MOTION_BLOCKING heightmap that matches

@@ -13,6 +13,9 @@ import org.slf4j.LoggerFactory;
 
 public class OreLizardsMod implements ModInitializer {
 	public static final String MOD_ID = "orelizards";
+	// slf4j is available on 1.17.1 even though the game itself still logs through log4j: the
+	// dedicated server jar bundles slf4j-api and the log4j binding, and the client lists both as
+	// libraries. (1.16.x has neither - that is where this would need to become log4j.)
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
 	@Override
@@ -24,7 +27,7 @@ public class OreLizardsMod implements ModInitializer {
 		FabricDefaultAttributeRegistry.register(ModEntities.ORE_LIZARD, OreLizardEntity.createAttributes());
 		// The spawn placement rule (ON_GROUND, MOTION_BLOCKING, OreLizardEntity::canSpawn) is
 		// declared on the entity type builder in ModEntities - see the comment there. The spawn
-		// egg's creative tab is set on the item itself in ModItems; 1.18.2 has no tab event API.
+		// egg's creative tab is set on the item itself in ModItems; 1.17.1 has no tab event API.
 		// Weight 1, group size 1: rare relative to Bat's own vanilla weight of 10 in the same
 		// AMBIENT category/cap. Real-world sighting frequency also depends on how much of that
 		// shared cap bats themselves are using, so treat this as a starting point to retune from

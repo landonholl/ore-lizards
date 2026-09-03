@@ -1,6 +1,87 @@
 # Changelog
 
-## 1.2.0+mc1.18.2
+## 1.2.0+mc1.17.1
+
+A port of 1.2.0 to Minecraft 1.17.1, built from the 1.18.2 port rather than from 1.20.1 directly.
+1.17.1 is served by GeckoLib **3.0.32**, the same API generation as the 3.0.80 the 1.18.2 build uses
+but a few months older, so everything the `## 1.2.0+mc1.18.2` section says about GeckoLib 3 - the
+layer that re-renders the model for the tint and glow passes, the reset-speed hold on the burrow
+pose, the layer checking `isInvisible()` itself, the `geckolib3` mod id, spawn placement on Fabric's
+entity builder, the Miscellaneous creative tab, and the Mojmap patch in `build.gradle` - applies
+here unchanged and is not repeated. The mob is still meant to behave exactly as it does on 1.20.1;
+this section lists only what 1.17.1 itself forced, and the one place it could not be matched.
+
+### Changed
+
+- **Deepslate attribution also samples the block underfoot, because 1.17.1 has no deepslate
+  layer to read a depth against.** On 1.18+ the rule is `Y < -4`, the midpoint of the band where
+  worldgen blends stone into deepslate, and it is exact there because depth is what decides the
+  surrounding rock. A default 1.17.1 world ends at Y=0, and its deepslate occurs only as blobs
+  scattered through the stone between Y=0 and Y=16, so kept as written the threshold could never be
+  met: every natural spawn would be a stone lizard, and the deepslate skin, the deepslate dig and
+  step sounds and the diamond/emerald-weighted variant table would all be dead code on this version.
+  `finalizeSpawn` therefore treats the lizard as deepslate when *either* the threshold holds - kept
+  for worlds a datapack has extended downwards, where 1.17's experimental worldgen lays the same
+  layer, and for parity with the other versions - *or* the block it is sitting on is
+  `minecraft:deepslate`. `canSpawn` already requires that block to be base stone, so for a natural
+  spawn the second test is precisely "did it land on a deepslate blob". Two consequences worth
+  knowing: deepslate lizards are rarer here than on 1.18+, since blobs are a small fraction of the
+  stone at those depths rather than all of it; and a spawn egg used on a deepslate block gives a
+  deepslate lizard at any height, where on 1.18+ it would not above Y=-4. This is the one deliberate
+  behavioural deviation in the port.
+- **Animations are queued with GeckoLib 3.0.32's plain loop boolean.** 3.0.32 predates `ILoopType`
+  altogether; `AnimationBuilder.addAnimation` takes `(name, Boolean loop)`, so `scuttle` is queued
+  with `true` and `burrow`/`appear` with `false`. `false` is play-once, which does exactly what
+  3.0.80's inert `HOLD_ON_LAST_FRAME` does - the controller stops at the end of the clip and the
+  processor starts easing the bones back to rest over `AnimationData.resetTickLength` - so the
+  reset-speed hold from the 1.18.2 port carries over unchanged. Both were re-checked against the
+  `AnimationController` and `AnimationProcessor` sources bundled in the 3.0.32 jar: a stopped
+  controller queues no bone points, the reset lerp reads `getResetSpeed()` every frame, and with a
+  zero transition length `MathUtil.lerpValues` still returns the clip's own first-frame value on the
+  first frame and starts the clock at tick 0 on the next.
+- **The layer strips each bone's cube list instead of setting a cube-hidden flag.** 3.0.32's
+  `GeoBone` has only `setHidden`, which takes the bone's children with it - and both glowing bones
+  are children of bones that must be skipped - so the `setCubesHidden` the 1.18.2 port relies on is
+  not there. `childCubes` is a public field that `renderRecursively` simply iterates after applying
+  the bone transform, so `OreTintLayer` swaps it for an empty list on every non-glowing bone before
+  its two passes and puts the originals back in a `finally`. Same geometry drawn, same shared baked
+  model restored before anyone else renders from it.
+
+### Build
+
+- **The client source set is declared by hand.** Loom's `splitEnvironmentSourceSets()` needs the
+  split client-only/common Minecraft jars, which Loom only produces for versions with a bundled
+  server jar (1.18+); on 1.17.1 configuration fails with "Only Minecraft versions using a bundled
+  server jar can be split". `build.gradle` now declares `sourceSets.client` itself against the merged
+  jar (main's classpath plus main's output), registers it in `loom.mods` and on the `client` run, and
+  adds it to `jar` and `sourcesJar`. The layout and the jar's contents are identical to the other
+  versions; what is lost is only the compiler enforcing that `src/main` never touches a client class.
+- **`libs/mclib-18.jar` and `libs/molang-18.jar` replace `main`'s `libs/mclib-20.jar`.** GeckoLib
+  3.0.32 does not shade its maths libraries: `AnimationController` and `AnimationProcessor` import
+  `com.eliotlash.mclib` and `com.eliotlash.molang` directly and the jar supplies both only as
+  jar-in-jar under `META-INF/jars/`. Loom 1.17's dev classpath does not pick nested jars up (its
+  remapped-mods cache holds nothing but the GeckoLib jar itself), so both are extracted and put on
+  the dev classpath with `implementation files(...)`. Dev-only, as before: the shipped mod carries
+  neither, GeckoLib does.
+- **`fabric.mod.json` depends on `fabric`, not `fabric-api`.** Fabric API's umbrella mod was still
+  registered under the id `fabric` in the 1.17 line (0.46.1+1.17 here; GeckoLib 3.0.32's own
+  manifest depends on it by that name too), and the `fabric-api` id the other versions declare only
+  arrived with the 1.18 releases. With `fabric-api` Fabric Loader refuses to start - "requires any
+  version of fabric-api, which is missing" - exactly the way `geckolib` instead of `geckolib3` does.
+- **Java 16.** `options.release = 16`, `JAVA_16` for the mixin config, `"java": ">=16"` in
+  `fabric.mod.json`; the sources use nothing past that (arrow switches, `instanceof` patterns and
+  `List.of` are all fine). `minecraft` is pinned to `1.17.1` and Fabric API is `0.46.1+1.17`. The
+  Mojmap patch for `GeoProjectilesRenderer` applies to 3.0.32 unchanged - it has the same
+  `getTextureLocation(Entity)`/`method_3931` pair - and was confirmed by the remap going through.
+
+### Not verified
+
+- Everything client-side was checked against GeckoLib 3.0.32's bytecode and bundled `core` sources,
+  not in a running client: the cube-list swap, the tint and emissive passes, the zero-tick
+  transition and the reset-speed hold. The headless dedicated server run covers registration,
+  spawning, the state machine and drops only.
+- The deepslate-blob attribution was checked by reading the worldgen, not by catching a lizard on a
+  blob; a natural deepslate spawn on this version has not been observed.
 
 A port of 1.2.0 to Minecraft 1.18.2. The mob is meant to behave exactly as it does on 1.20.1; this
 section lists only what had to be done differently and why. The big one is the animation library:

@@ -24,13 +24,33 @@ repositories {
 	}
 }
 
-loom {
-	splitEnvironmentSourceSets()
+// Loom's splitEnvironmentSourceSets() would normally declare the client source set, but it needs
+// Loom's split client-only/common Minecraft jars, which only exist for versions that ship a bundled
+// server jar (1.18+); on 1.17.1 Loom refuses with "Only Minecraft versions using a bundled server
+// jar can be split". The same layout is kept by declaring the client source set by hand against the
+// merged jar: it sees main's classpath and output, is packaged into the same jar (see the jar tasks
+// at the bottom of this file), and is registered below as part of the one mod so Loader treats both
+// output directories as orelizards at runtime. Nothing in src/client is any less client-only for
+// it - the split is enforced by convention and by fabric.mod.json's "client" entrypoint, just not by
+// the compiler.
+sourceSets {
+	client {
+		compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+		runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+	}
+}
 
+loom {
 	mods {
 		orelizards {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
+		}
+	}
+
+	runs {
+		client {
+			source sourceSets.client
 		}
 	}
 }
@@ -140,9 +160,13 @@ dependencies {
 	// the coordinate in gradle.properties, then patched for Mojang mappings - see geckolibMojmapJar.
 	modImplementation files(geckolibMojmapJar())
 
-	// GeckoLib 3.0.80 shades mclib into software.bernie.shadowed.eliotlash.mclib and nothing in it
-	// references the copy it also nests as META-INF/jars/mclib-20.jar, so the libs/mclib-20.jar
-	// workaround the 1.20.1 build needs does not apply here.
+	// GeckoLib 3.0.32 does not shade its maths libraries: AnimationController and AnimationProcessor
+	// import com.eliotlash.mclib and com.eliotlash.molang directly, and the jar supplies both only as
+	// jar-in-jar (META-INF/jars/mclib-18.jar and molang-18.jar). Loom 1.17's dev-launch classpath
+	// doesn't pick nested jars up - the same gap the 1.20.1 build works around with libs/mclib-20.jar -
+	// so both are extracted straight out of the GeckoLib jar and put on the classpath here. Only
+	// runClient/runServer need this; the built mod doesn't ship them, GeckoLib does.
+	implementation files('libs/mclib-18.jar', 'libs/molang-18.jar')
 }
 
 processResources {
@@ -154,12 +178,22 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 17
+	it.options.release = 16
 }
 
 java {
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_17
-	targetCompatibility = JavaVersion.VERSION_17
+	sourceCompatibility = JavaVersion.VERSION_16
+	targetCompatibility = JavaVersion.VERSION_16
+}
+
+// The hand-declared client source set (top of this file) has to be added to the jars explicitly;
+// splitEnvironmentSourceSets() does this itself on the versions that can use it.
+jar {
+	from sourceSets.client.output
+}
+
+sourcesJar {
+	from sourceSets.client.allSource
 }

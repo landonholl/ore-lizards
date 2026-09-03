@@ -15,7 +15,7 @@ public final class ModItems {
 	public static final Item ORE_LIZARD_SPAWN_EGG = Registry.register(
 			Registry.ITEM,
 			new ResourceLocation(OreLizardsMod.MOD_ID, "ore_lizard_spawn_egg"),
-			// 1.18.2 has no Spawn Eggs tab and no creative-tab event API; vanilla's own spawn eggs
+			// 1.17.1 has no Spawn Eggs tab and no creative-tab event API; vanilla's own spawn eggs
 			// live in Miscellaneous, and an item declares its tab on its properties.
 			new SpawnEggItem(ModEntities.ORE_LIZARD, EGG_BACKGROUND_COLOR, EGG_HIGHLIGHT_COLOR,
 					new Item.Properties().tab(CreativeModeTab.TAB_MISC)));

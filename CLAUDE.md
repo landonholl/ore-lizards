@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.18.2 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.17.1 (Java 16, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 3.0.80 drives its model/animations. This is the
-1.18.2 port of the 1.20.1 build on `main` (GeckoLib 4.8.4); behaviour is meant to be identical, and
-the `## 1.2.0+mc1.18.2` section of [CHANGELOG.md](CHANGELOG.md) lists everything that differs and why.
+walks near, flees, then burrows back down. GeckoLib 3.0.32 drives its model/animations. This is the
+1.17.1 port of the 1.20.1 build on `main` (GeckoLib 4.8.4), made from the 1.18.2 port (GeckoLib
+3.0.80); behaviour is meant to be identical, and the `## 1.2.0+mc1.17.1` and `## 1.2.0+mc1.18.2`
+sections of [CHANGELOG.md](CHANGELOG.md) together list everything that differs and why.
 
 ## Commands
 
@@ -21,7 +22,7 @@ the `## 1.2.0+mc1.18.2` section of [CHANGELOG.md](CHANGELOG.md) lists everything
 
 There is no test source set and no linter configured — verification is done by running the client
 and playing. Use `/summon orelizards:ore_lizard` for a raw spawn, or the spawn egg (Miscellaneous
-creative tab — 1.18.2 has no Spawn Eggs tab) when you need `finalizeSpawn` to run (variant
+creative tab — 1.17.1 has no Spawn Eggs tab) when you need `finalizeSpawn` to run (variant
 assignment, deepslate attribution, dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards
 are *not* representative.
 
@@ -29,14 +30,19 @@ Dependency versions live in [gradle.properties](gradle.properties), not `build.g
 
 ## Architecture
 
-Split source sets via Loom's `splitEnvironmentSourceSets()`:
+Split source sets, declared by hand in `build.gradle` (`sourceSets { client { ... } }`):
 
 - [src/main/java](src/main/java) — common/server. Anything in here must not touch client classes.
 - [src/client/java](src/client/java) — rendering only. Registered from
   [OreLizardsModClient.java](src/client/java/com/orelizards/OreLizardsModClient.java).
 
 Both source sets are declared as one mod (`mods { orelizards { ... } }`) so they share a classpath
-at runtime.
+at runtime. The other versions get the `client` source set from Loom's `splitEnvironmentSourceSets()`;
+that needs Loom's split client-only/common Minecraft jars, which only exist for versions with a
+bundled server jar (1.18+), so on 1.17.1 Loom refuses ("Only Minecraft versions using a bundled
+server jar can be split") and the source set compiles against the merged jar instead. The split is
+therefore a convention here, not something the compiler enforces — a client import in `src/main`
+would compile fine and crash a dedicated server.
 
 ### The state machine
 
@@ -110,11 +116,13 @@ shader packs have no convention for. The pass is skipped for invisible (dormant)
 
 **How a GeckoLib 3 layer draws only two bones.** A `GeoLayerRenderer` has no per-bone hook; its
 single `render` runs after the body has been written and re-renders the *whole* model. So
-`OreTintLayer` hides the cubes of every bone that isn't `shards`/`eyes` (`setCubesHidden`, never
-`setHidden` — a hidden bone takes its children with it, and both glowing bones are children of
-bones that must be skipped), renders the model twice more through `IGeoRenderer.render`, and
-restores the flags. The baked `GeoModel` is shared by every lizard on screen, hence the `finally`.
-GeckoLib 3 runs layers inside the entity's model transform, so no bone matrices need carrying over.
+`OreTintLayer` strips the cubes off every bone that isn't `shards`/`eyes`, renders the model twice
+more through `IGeoRenderer.render`, and puts them back. GeckoLib 3.0.32 has no `setCubesHidden`
+(later 3.0.x builds do), only `setHidden` — which takes the bone's children with it, and both glowing
+bones are children of bones that must be skipped — so the layer swaps the public `childCubes` list
+for an empty one and parks the original until the `finally`. The baked `GeoModel` is shared by every
+lizard on screen, hence the `finally`. GeckoLib 3 runs layers inside the entity's model transform,
+so no bone matrices need carrying over.
 
 **Never request a different render type's buffer partway through the bone recursion.** Only a
 fixed set of render types get their own `BufferBuilder` in `RenderBuffers`; everything else shares
@@ -134,7 +142,7 @@ alpha, so a dormant lizard would otherwise show as a floating, glowing set of sh
 
 Three files must agree, and mismatches fail *silently* (log spam at most):
 
-- Animation names in `new AnimationBuilder().addAnimation("...", loopType)` must exactly match the
+- Animation names in `new AnimationBuilder().addAnimation("...", loop)` must exactly match the
   top-level keys in [ore_lizard.animation.json](src/main/resources/assets/orelizards/animations/entity/ore_lizard.animation.json)
   (currently `idle`, `scuttle`, `burrow`, `appear` — bare names, no `animation.orelizard.` prefix).
 - Bone names animated in the animation JSON must exist in
@@ -157,13 +165,18 @@ GeckoLib 3 timing rules this mob depends on:
   into position first. `transitionLengthTicks` is a public field on the controller in GeckoLib 3.
   A zero-length transition is safe: `MathUtil.lerpValues` returns the end value outright when the
   transition length is 0, so the frame shown is the clip's own first frame.
-- **`HOLD_ON_LAST_FRAME` is declared but inert in 3.0.80.** It is constructed with the same
-  `looping=false` flag as `PLAY_ONCE` and nothing in `AnimationController`/`AnimationProcessor`
-  tests for it, so a finished one-shot stops its controller and the processor eases every bone back
-  to rest over `AnimationData.resetTickLength` (default 1 tick). The burrow pose is held by setting
-  that reset speed to 1200 ticks while DIGGING_DOWN (`HOLD_RESET_TICKS` in `OreLizardEntity`) and
-  back to 1 in every other state; the `AnimationData` handed to `registerControllers` is captured
-  into the predicate for that. Do not "simplify" this back to a loop type.
+- **There is no way to hold a last frame in GeckoLib 3.0.32.** It has no `ILoopType`;
+  `addAnimation(name, Boolean loop)` is the whole API, and `false` is play-once: a finished one-shot
+  stops its controller and the processor eases every bone back to rest over
+  `AnimationData.resetTickLength` (default 1 tick). (3.0.80 declares a `HOLD_ON_LAST_FRAME` that
+  does the same thing.) The burrow pose is held by setting that reset speed to 1200 ticks while
+  DIGGING_DOWN (`HOLD_RESET_TICKS` in `OreLizardEntity`) and back to 1 in every other state; the
+  `AnimationData` handed to `registerControllers` is captured into the predicate for that. Do not
+  "simplify" this away.
+- **GeckoLib 3.0.32's `core` sources ship inside the jar** (`software/bernie/geckolib3/core/**/*.java`
+  next to the classes), so `AnimationController`, `AnimationProcessor`, `AnimationData` and
+  `MathUtil` can be read directly with `unzip -p` instead of decompiled. Everything above was
+  checked that way.
 
 ## Spawning
 
@@ -175,12 +188,16 @@ plus a 30% rejection roll inside `canSpawn` because spawn weights are integers a
 
 The placement rule (`ON_GROUND`, `MOTION_BLOCKING`, `OreLizardEntity::canSpawn`) is declared on
 `FabricEntityTypeBuilder.createMob().spawnRestriction(...)` because `SpawnPlacements.register` is
-private in 1.18.2; Fabric's builder reaches it through an accessor.
+private in 1.17.1; Fabric's builder reaches it through an accessor.
 
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
-during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band), not by sampling blocks.
+during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided in
+`finalizeSpawn` by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band, kept for parity
+and for datapack-extended worlds) **or** by the block underfoot being `minecraft:deepslate`. The
+second test exists only on this version: a default 1.17.1 world ends at Y=0 and its deepslate is
+blobs between Y=0 and Y=16 rather than a layer, so the threshold alone could never be met and every
+lizard would be stone. It is the port's one documented behavioural deviation — see the changelog.
 
 ## Repo gotchas
 
@@ -194,12 +211,19 @@ by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band), not by sam
   configuration (resolving one that early breaks Loom's repository setup) or Loom's
   `RemapperExtension` API (Loom loads those via its own classloader, which can't see build-script
   classes).
-- `fabric.mod.json` depends on `geckolib3` — the mod id of the 3.x line — not `geckolib`.
-- There is no `libs/mclib-20.jar` here, unlike `main`: GeckoLib 3.0.80 shades mclib into
-  `software.bernie.shadowed.eliotlash.mclib` and never references the copy it also nests, so the
-  jar-in-jar workaround has nothing to work around.
+- `fabric.mod.json` depends on `geckolib3` — the mod id of the 3.x line — not `geckolib`, and on
+  `fabric` — Fabric API's umbrella id in the 1.17 line — not `fabric-api`. Either wrong id makes
+  Loader refuse to start with a "requires any version of X, which is missing" error.
+- `libs/mclib-18.jar` and `libs/molang-18.jar` are checked in for the same reason `main` carries
+  `libs/mclib-20.jar`: GeckoLib 3.0.32 imports `com.eliotlash.mclib`/`com.eliotlash.molang`
+  unshaded (3.0.80 shades them) and only supplies them jar-in-jar, which Loom 1.17's dev classpath
+  doesn't pick up. Both were extracted straight out of the GeckoLib jar's `META-INF/jars/`. Only
+  `runClient`/`runServer` need them; `build` does not.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
+- slf4j is usable on 1.17.1 despite the game logging through log4j: the dedicated server jar
+  bundles `slf4j-api` and the log4j binding, and the client lists both as libraries. 1.16.x has
+  neither, so that is where `OreLizardsMod.LOGGER` would have to become log4j.
 - GeckoLib 3's example mod is enabled in dev unless `-Dgeckolib.disable_examples` is set; it
   registers a handful of example entities/items. Harmless, but don't mistake them for ours.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same

@@ -37,18 +37,17 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.ItemLike;
 import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib3.core.IAnimatable;
 import software.bernie.geckolib3.core.PlayState;
 import software.bernie.geckolib3.core.builder.AnimationBuilder;
-import software.bernie.geckolib3.core.builder.ILoopType.EDefaultLoopTypes;
 import software.bernie.geckolib3.core.controller.AnimationController;
 import software.bernie.geckolib3.core.event.predicate.AnimationEvent;
 import software.bernie.geckolib3.core.manager.AnimationData;
 import software.bernie.geckolib3.core.manager.AnimationFactory;
-import software.bernie.geckolib3.util.GeckoLibUtil;
 
 import java.util.Random;
 import java.util.UUID;
@@ -86,7 +85,7 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
-	private static final AnimationBuilder SCUTTLE_ANIM = new AnimationBuilder().addAnimation("scuttle", EDefaultLoopTypes.LOOP);
+	private static final AnimationBuilder SCUTTLE_ANIM = new AnimationBuilder().addAnimation("scuttle", true);
 	// Play once and stay on the final frame. A one-shot that runs out stops its controller, which
 	// drops the model back to its bind pose. Burrow's last frame leaves the body 32 units (two
 	// blocks) underground, so reverting would pop the lizard back up above ground, in full view,
@@ -94,13 +93,13 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	// but the same treatment removes any chance of a one-tick flicker between it finishing and
 	// FLEEING.
 	//
-	// GeckoLib 3.0.80 declares HOLD_ON_LAST_FRAME but does not implement it: it is constructed with
-	// the same looping=false flag as PLAY_ONCE and nothing in AnimationController or
-	// AnimationProcessor ever tests for it, so at the end of the clip the controller still goes to
-	// Stopped and the processor starts easing every bone back towards its rest pose. The loop type
-	// is kept for intent; the actual hold is done with the reset speed - see animate().
-	private static final AnimationBuilder BURROW_ANIM = new AnimationBuilder().addAnimation("burrow", EDefaultLoopTypes.HOLD_ON_LAST_FRAME);
-	private static final AnimationBuilder APPEAR_ANIM = new AnimationBuilder().addAnimation("appear", EDefaultLoopTypes.HOLD_ON_LAST_FRAME);
+	// GeckoLib 3.0.32 has no loop-type enum at all: addAnimation takes a plain loop boolean, and
+	// false is play-once, so at the end of the clip the controller goes to Stopped and the processor
+	// starts easing every bone back towards its rest pose. (Later 3.0.x builds declare a
+	// HOLD_ON_LAST_FRAME but never implement it, so they come to the same thing.) There is nothing
+	// here to express the hold with; it is done with the reset speed instead - see animate().
+	private static final AnimationBuilder BURROW_ANIM = new AnimationBuilder().addAnimation("burrow", false);
+	private static final AnimationBuilder APPEAR_ANIM = new AnimationBuilder().addAnimation("appear", false);
 
 	// Blend time when switching animations. The walk cycle wants to ease in; the state animations
 	// must not - see animate() for why.
@@ -118,14 +117,17 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	private static final double DEFAULT_RESET_TICKS = 1.0;
 	private static final double HOLD_RESET_TICKS = 1200.0;
 
-	// Spawn band: high enough to reach the stone layer (deepslate takes over below Y=-8), but
-	// still required to sit well under the terrain surface so it stays a cave mob.
+	// Spawn band: high enough to reach the stone layer, but still required to sit well under the
+	// terrain surface so it stays a cave mob. A default 1.17.1 world has its floor at Y=0, so this
+	// covers the whole depth there is.
 	private static final int MAX_SPAWN_Y = 50;
 	private static final int MIN_DEPTH_BELOW_SURFACE = 8;
-	// 1.18+ worldgen replaces stone with deepslate entirely below Y=-8, blending randomly from
-	// Y=0 down. -4 is the midpoint of that band, so it's the closest single threshold to what the
-	// surrounding rock actually looks like - and it's the rule that drives the distribution in the
-	// first place, so reading it directly beats sampling blocks at spawn time.
+	// Carried over from the 1.18+ builds, where worldgen replaces stone with deepslate entirely
+	// below Y=-8, blending randomly from Y=0 down, and -4 is the midpoint of that band. A default
+	// 1.17.1 world has nothing below Y=0, so here the threshold can never be met on its own; it
+	// still applies to a world a datapack has extended downwards, where 1.17's experimental worldgen
+	// lays the same deepslate layer. For default worlds finalizeSpawn samples the block underfoot
+	// instead - see there.
 	private static final int DEEPSLATE_Y_LEVEL = -4;
 
 	// Spawn attempts that pass every other rule still fail 30% of the time, trimming the rate
@@ -167,7 +169,8 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	private static final double SPARK_Y_OFFSET = 0.35;
 	private static final double SPARK_SPREAD = 0.2;
 
-	private final AnimationFactory factory = GeckoLibUtil.createFactory(this);
+	// GeckoLib 3.0.32 predates GeckoLibUtil.createFactory; the factory is constructed directly.
+	private final AnimationFactory factory = new AnimationFactory(this);
 
 	private int stateTimer;
 	@Nullable
@@ -204,11 +207,11 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
 		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
 		//
-		// The old "Y < 0" rule made stone lizards unreachable: 1.18+ worldgen fully replaces
-		// stone with deepslate below Y=-8 (blending from Y=0 down), so every natural spawn landed
-		// on deepslate. The ceiling now reaches up into the stone band instead. Depth-below-
-		// surface (rather than a light check) is what keeps it genuinely underground, since it
-		// works during worldgen when lighting isn't computed yet and ignores player torches.
+		// The old "Y < 0" rule made stone lizards unreachable on 1.18+ (worldgen fully replaces
+		// stone with deepslate below Y=-8 there), and on 1.17.1, whose world floor is Y=0, it
+		// could never be satisfied at all. The ceiling reaches up into the stone band instead.
+		// Depth-below-surface (rather than a light check) is what keeps it genuinely underground,
+		// since it works during worldgen when lighting isn't computed yet and ignores player torches.
 		// Cheapest gate first so the majority of rejected attempts never reach the heightmap lookup.
 		return random.nextInt(100) < SPAWN_CHANCE_PERCENT
 				&& pos.getY() < MAX_SPAWN_Y
@@ -287,7 +290,15 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	@Override
 	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType,
 			@Nullable SpawnGroupData spawnGroupData, @Nullable CompoundTag dataTag) {
-		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
+		// On 1.18+ the Y threshold alone decides this, because there the depth *is* what decides
+		// whether the surrounding rock is deepslate. 1.17.1 has no such layer: its default worlds
+		// stop at Y=0, and deepslate only occurs as blobs scattered through the stone between Y=0
+		// and Y=16. The only honest signal of what the lizard is embedded in is the block it is
+		// sitting on, so that is sampled as well. canSpawn already requires that block to be base
+		// stone, so for a natural spawn this is exactly "did it land on a deepslate blob"; the
+		// threshold is kept for datapack-extended worlds and for parity with the other versions.
+		BlockPos pos = this.blockPosition();
+		boolean deepslate = pos.getY() < DEEPSLATE_Y_LEVEL || level.getBlockState(pos.below()).is(Blocks.DEEPSLATE);
 		this.setDeepslate(deepslate);
 		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
 		this.becomeDormant();
@@ -661,7 +672,9 @@ public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	}
 
 	private PlayState animate(AnimationEvent<OreLizardEntity> event, AnimationData data) {
-		AnimationController<OreLizardEntity> controller = event.getController();
+		// getController() hands back the raw type in GeckoLib 3.0.32; nothing below needs the
+		// animatable's type, so the wildcard keeps this an unchecked-warning-free assignment.
+		AnimationController<?> controller = event.getController();
 		// State checks take priority over the generic movement check below, so burrow/appear
 		// can't get interrupted by some incidental movement source during those windows.
 		State lizardState = this.getLizardState();

@@ -8,11 +8,13 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.LivingEntityRenderer;
 import net.minecraft.resources.ResourceLocation;
 import software.bernie.geckolib3.geo.render.built.GeoBone;
+import software.bernie.geckolib3.geo.render.built.GeoCube;
 import software.bernie.geckolib3.geo.render.built.GeoModel;
 import software.bernie.geckolib3.model.provider.GeoModelProvider;
 import software.bernie.geckolib3.renderers.geo.GeoLayerRenderer;
 import software.bernie.geckolib3.renderers.geo.IGeoRenderer;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -25,10 +27,10 @@ import java.util.List;
  * <p><b>How the two passes are drawn on GeckoLib 3.</b> A GeckoLib 3 layer has no per-bone hook;
  * its one entry point, {@link #render}, runs after the whole body has been written and re-renders
  * the <em>entire</em> model. So instead of capturing bone matrices during the body pass (what the
- * 1.20.1 build does), this hides the cubes of every bone that isn't a glowing one and renders the
+ * 1.20.1 build does), this strips the cubes off every bone that isn't a glowing one and renders the
  * model twice more through {@link IGeoRenderer#render}: once with the tint through the body's own
- * render type, once fullbright through {@code RenderType.eyes}. Only the cubes are hidden, never the
- * bones themselves - a hidden bone takes its children with it, and {@code eyes} sits under
+ * render type, once fullbright through {@code RenderType.eyes}. Only the cubes are taken away, never
+ * the bones themselves - a hidden bone takes its children with it, and {@code eyes} sits under
  * {@code head} while {@code shards} sits under {@code body}. GeckoLib 3 also runs its layers inside
  * the entity's own model transform (rotation applied, {@code (0, 0.01, 0)} lift included), so the
  * bones land exactly where the body pass put them with no matrix bookkeeping.
@@ -55,6 +57,14 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 	 * shards, and means a coal lizard's eyes stay dark too.
 	 */
 	private static final float GLOW_STRENGTH = 0.7F;
+
+	// Where the cube lists of the bones stripped for the current passes are parked until
+	// restoreCubes puts them back - see stripCubesExceptGlowing. Parallel lists rather than a map:
+	// it is the same handful of bones every frame. Mutable renderer state is safe here only because
+	// a renderer instance is driven by a single thread and strip and restore both happen within one
+	// entity's render call; the finally in render() guarantees the lists are empty again on exit.
+	private final List<GeoBone> strippedBones = new ArrayList<>();
+	private final List<List<GeoCube>> strippedCubes = new ArrayList<>();
 
 	public OreTintLayer(IGeoRenderer<OreLizardEntity> renderer) {
 		super(renderer);
@@ -85,9 +95,9 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 		float blue = (color & 0xFF) / 255F;
 
 		IGeoRenderer<OreLizardEntity> renderer = getRenderer();
-		// The baked model is shared by every lizard on screen, so the flags are always put back
+		// The baked model is shared by every lizard on screen, so the cubes are always put back
 		// before returning; the render thread is the only one that touches them.
-		setCubesHiddenExceptGlowing(model, true);
+		stripCubesExceptGlowing(model);
 		try {
 			// Tint pass: the glowing bones again, through the very render type the body used, with
 			// the variant color multiplied in. Same geometry at the same depth, so it overwrites.
@@ -99,7 +109,7 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 			renderEmissive(renderer, model, animatable, texture, poseStack, bufferSource, partialTick, packedOverlay,
 					red, green, blue);
 		} finally {
-			setCubesHiddenExceptGlowing(model, false);
+			restoreCubes();
 		}
 	}
 
@@ -130,22 +140,39 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 	}
 
 	/**
-	 * Hides (or restores) the cubes of every bone except the glowing ones. Cubes only: GeckoLib 3's
+	 * Takes the cubes off every bone except the glowing ones, so a full render of the model draws
+	 * only {@code shards} and {@code eyes}. Cubes only, never the bones: GeckoLib 3's
 	 * {@code renderRecursively} skips a hidden bone's children as well as its cubes, and both
 	 * glowing bones are children of bones that must be skipped.
+	 *
+	 * <p>GeckoLib 3.0.32 has no per-bone "cubes hidden" flag (later 3.0.x builds grew one), but
+	 * {@code GeoBone.childCubes} is a public field that {@code renderRecursively} simply iterates,
+	 * so each stripped bone's list is swapped for an empty one and parked in {@link #strippedBones}
+	 * / {@link #strippedCubes} until {@link #restoreCubes} puts it back. Bones with no cubes of
+	 * their own (pure pivots) are left alone - there is nothing to strip.
 	 */
-	private static void setCubesHiddenExceptGlowing(GeoModel model, boolean hidden) {
+	private void stripCubesExceptGlowing(GeoModel model) {
 		for (GeoBone bone : model.topLevelBones) {
-			setCubesHiddenExceptGlowing(bone, hidden);
+			stripCubesExceptGlowing(bone);
 		}
 	}
 
-	private static void setCubesHiddenExceptGlowing(GeoBone bone, boolean hidden) {
-		if (!GLOWING_BONES.contains(bone.getName())) {
-			bone.setCubesHidden(hidden);
+	private void stripCubesExceptGlowing(GeoBone bone) {
+		if (!GLOWING_BONES.contains(bone.getName()) && bone.childCubes != null && !bone.childCubes.isEmpty()) {
+			this.strippedBones.add(bone);
+			this.strippedCubes.add(bone.childCubes);
+			bone.childCubes = List.of();
 		}
 		for (GeoBone child : bone.childBones) {
-			setCubesHiddenExceptGlowing(child, hidden);
+			stripCubesExceptGlowing(child);
 		}
+	}
+
+	private void restoreCubes() {
+		for (int i = 0; i < this.strippedBones.size(); i++) {
+			this.strippedBones.get(i).childCubes = this.strippedCubes.get(i);
+		}
+		this.strippedBones.clear();
+		this.strippedCubes.clear();
 	}
 }
