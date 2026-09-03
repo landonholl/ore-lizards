@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.20.4 (Java 17, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.4.4 drives its model/animations.
 
 ## Commands
 
@@ -154,7 +154,10 @@ roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4`, not by sampling blocks. That threshold is carried over from 1.20.1 unchanged, for
+behavioural parity. Note that vanilla's `deepslate` surface rule is `verticalGradient(0, 8)` on both
+versions - all deepslate at Y ≤ 0, all stone at Y ≥ 8 - so the Y=-8..0 band the source comments
+describe is off by eight, and -4 sits below the real blend rather than in the middle of it.
 
 ## Repo gotchas
 
@@ -168,3 +171,18 @@ by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by samp
 - `orelizards.mixins.json` is wired up but has no mixins yet.
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
+- This branch is the **1.20.4 port**. GeckoLib 4.4.4 is *older* than main's 4.8.4, but every call the
+  mod makes has the same signature there, and the vanilla API needed no changes at all. The breaks
+  all land in 1.20.5/1.21: `defineSynchedData(SynchedEntityData.Builder)`, `finalizeSpawn` losing
+  its `CompoundTag`, `setMaxUpStep` → the `STEP_HEIGHT` attribute, `AttributeModifier` keyed by
+  `ResourceLocation`, `isPathfindable(PathComputationType)` only, the `ResourceLocation` constructor
+  going private, and on the GeckoLib side the `core` package being flattened and
+  `renderCubesOfBone` taking a packed int colour.
+- The `FabricEntityTypeBuilder` deprecation note from `compileJava` is not new here: it is deprecated
+  in main's Fabric API 0.92.11 as well, so it was left alone for parity. The replacement, when a
+  version forces it, is vanilla `EntityType.Builder.of(...).sized(0.9F, 0.6F).clientTrackingRange(8)`
+  plus Fabric's injected no-key `build()` - which is `build(null)`, so it goes through vanilla's
+  datafixer choice-type lookup that the old builder skipped.
+- `runServer`'s default port 25565 may already be taken by another dev server on the machine. Loom
+  honours a pre-created `run/server.properties`, so set `server-port` there before a headless run
+  rather than waiting for the bind failure.

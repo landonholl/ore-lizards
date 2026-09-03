@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.2.0+mc1.20.4
+
+A port of 1.2.0 to Minecraft 1.20.4. The mob behaves exactly as it does on 1.20.1 - the state
+machine, spawning, despawn rules, NBT, combat, drops, sounds, particles and rendering are all the
+same code - so this section lists only what differs in the build, and what the port could not check.
+
+### Changed
+
+- **GeckoLib 4.8.4 → 4.4.4.** 4.4.4 is the GeckoLib build published for 1.20.4, and it is *older*
+  than the 4.8.4 the 1.20.1 release depends on, so every GeckoLib call the mod makes was checked
+  against it individually rather than assumed to carry over: `GeoRenderLayer.renderForBone` and
+  `render`, the float r/g/b/a overload of `GeoRenderer.renderCubesOfBone` that both the tint pass
+  and the emissive pass lean on, `RawAnimation.thenPlayAndHold`, `AnimationController.transitionLength`,
+  `AnimationState.isMoving` and `GeckoLibUtil.createInstanceCache` all exist with the same
+  signatures, under the same `software.bernie.geckolib.core.*` packages. Not one source file
+  changed, which also means both rendering rules from 1.1.0 still hold as written: the emissive
+  pass is still deferred to the layer's `render`, and it still goes through `RenderType.eyes`.
+  This is the last GeckoLib line where that is true - 4.5+ (1.20.5 and up) flattens the `core`
+  package away and changes `renderCubesOfBone` to take a packed int colour.
+- **`libs/mclib-20.jar` kept as-is.** GeckoLib 4.4.4 nests the same `mclib-20.jar` as 4.8.4 -
+  byte-identical, same SHA-256 - so the Loom dev-classpath workaround is unchanged and the jar was
+  not replaced.
+- **`fabric.mod.json` pins `"minecraft": "1.20.4"`** rather than the 1.20.1 release's `~1.20.1`,
+  because 1.20.4 is the only game version GeckoLib 4.4.4 is published against. Fabric API is
+  0.97.3+1.20.4, Loader 0.19.5, Java stays at 17.
+- **The vanilla API needed nothing.** Everything the mob touches - `defineSynchedData()` with
+  `entityData.define`, `finalizeSpawn` with its trailing `CompoundTag`, `setMaxUpStep`,
+  `AttributeModifier` by `UUID`, `BlockState.isPathfindable(level, pos, type)`,
+  `dropCustomDeathLoot(source, looting, allowDrops)`, `PickaxeItem.getTier()`, the public
+  `ResourceLocation` constructor and `RenderType.eyes` - has the same signature on 1.20.4 as on
+  1.20.1. All of those change in 1.20.5 or 1.21, so this port is the easy one. The deepslate
+  threshold of `Y < -4` also carries over untouched: the overworld surface rule that places
+  deepslate is the same `verticalGradient(0, 8)` in both versions, so whatever it produces on
+  1.20.1 it produces here.
+
+### Unverified
+
+- **Everything client-side.** The port was verified by compiling and by a headless dedicated-server
+  run - mod initialisation and summoning an Ore Lizard - so nothing in the render path has been
+  seen on screen on 1.20.4: the variant tint, the emissive pass, the zero-transition `appear` and
+  `burrow` timing, or a shader pack's handling of `RenderType.eyes`. The vanilla client types
+  involved (`RenderType.eyes`, `LightTexture.FULL_BRIGHT`, `PoseStack.Pose.normal()` still
+  returning a `Matrix3f`) have the same signatures as on 1.20.1, so there is nothing to suggest a
+  difference, but it is a compile-time check only.
+
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it
