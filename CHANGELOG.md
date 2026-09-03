@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.2.0+mc1.20.2
+
+A port of 1.2.0 to Minecraft 1.20.2. The mob is unchanged; this section lists only what differs
+from the 1.20.1 build and why.
+
+### Changed
+
+- **Built against Minecraft 1.20.2, Fabric API 0.91.6+1.20.2, Fabric Loader 0.19.5 and GeckoLib
+  4.3.1.** 4.3.1 is the GeckoLib release Modrinth lists for 1.20.2 (and only 1.20.2), and it is
+  *older* than the 4.8.4 the 1.20.1 build uses - GeckoLib's 1.20.1 branch kept receiving releases
+  long after its 1.20.2 branch stopped. Every call the mod makes into it has the same shape in 4.3.1
+  (the `renderForBone`/`render` parameter lists on `GeoRenderLayer`, the r/g/b/a float overload of
+  `renderCubesOfBone`, `RawAnimation.thenPlayAndHold`, `AnimationController.transitionLength`,
+  `AnimationState.isMoving`, `GeckoLibUtil.createInstanceCache`, the
+  `software.bernie.geckolib.core.*` packages), and vanilla 1.20.2 changed nothing the mod touches -
+  its headline change was the network configuration phase. The Java sources are therefore identical
+  to 1.2.0. The `minecraft` dependency in `fabric.mod.json` is pinned to exactly `1.20.2`, which is
+  the only version GeckoLib 4.3.1 itself declares.
+- **A spectator can see a dormant lizard on this version, drawn solid.** GeckoLib 4.3.1's
+  `GeoEntityRenderer.actuallyRender` decides whether to draw the model with
+  `Entity.isInvisibleTo(localPlayer)`, and that is false for a spectator regardless of the invisible
+  flag, so a spectator gets the full base pass and the variant tint pass. 4.8.4 on 1.20.1 follows
+  vanilla's `LivingEntityRenderer` convention instead and shows an invisible mob to spectators as a
+  faint translucent ghost. Survival and creative players are unaffected - a dormant lizard is
+  invisible to them exactly as before - and the emissive pass is still gated on `isInvisible()`, so
+  it never glows while buried for anyone. Left as-is rather than patched: it is a cosmetic
+  difference visible only to spectators, and any fix would be a renderer change that cannot be
+  verified without a client.
+
+### Notes
+
+- **The animation controller ticks while the lizard is buried on this version.** In 4.3.1
+  `handleAnimations` runs from `actuallyRender` *before* the invisibility gate, where 4.8.4 skipped
+  it for an invisible entity. Nothing visible changes - the controller predicate returns
+  `PlayState.STOP` while BURIED - but the 1.20.1 reasoning that dormancy could never be expressed as
+  a held animation "because the controller is frozen" does not hold here. It is still not done that
+  way, so that the two versions behave identically.
+- **`libs/mclib-20.jar` is unchanged.** GeckoLib 4.3.1 nests the same `mclib-20` jar-in-jar as
+  4.8.4 - all 82 entries have identical sizes and CRCs, only the zip timestamps differ - so the
+  dev-classpath workaround stays exactly as it was.
+- **Not verified on this version: anything client-side.** The port was built and checked headless:
+  a 1.20.2 dedicated server loads GeckoLib 4.3.1 and the mod, reaches "Done", summons an Ore
+  Lizard through `finalizeSpawn` (a `#minecraft:load` function - console `summon` piped in from a
+  file runs with a null level, which is a vanilla console quirk, not the mob), saves it and shuts
+  down cleanly with no stack trace from either. The rendering, the animations and the spark trail
+  were not watched on 1.20.2 - they are expected to match 1.20.1 because neither the mod's
+  rendering code nor the GeckoLib entry points it uses changed shape, but nobody has looked.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it

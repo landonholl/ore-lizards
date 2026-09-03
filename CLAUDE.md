@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.20.2 (Java 17, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.3.1 drives its model/animations.
+
+This branch (`1.20.2`) is a port of the 1.20.1 build on `main`, which is the source of truth for
+what the mob does. The Java sources here are identical to `main`'s 1.2.0 — 1.20.2 changed nothing
+the mod touches — so the differences are confined to dependency versions and the GeckoLib rendering
+details noted below. Make behavioural changes on `main` first and port them.
 
 ## Commands
 
@@ -105,6 +110,13 @@ Iris/OptiFine so shader packs treat it as emissive. Deliberately *not* GeckoLib'
 `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask` texture and a custom render type that
 shader packs have no convention for. The pass is skipped for invisible (dormant) lizards.
 
+GeckoLib 4.3.1 draws the body of an invisible entity for anyone it is *not* `isInvisibleTo` — which
+is every spectator, since `Entity.isInvisibleTo` returns false for one before it ever consults the
+invisible flag. So on this version a spectator sees a buried lizard solid, base pass and tint pass
+included (only the emissive pass, gated on `isInvisible()`, stays off). 4.8.4 on `main` follows
+vanilla's translucent-ghost convention instead. Survival and creative players see nothing either
+way. Known, cosmetic, spectator-only, and deliberately not patched — see CHANGELOG.
+
 **Never call `bufferSource.getBuffer(...)` for a new render type from inside `renderForBone`.**
 Only a fixed set of render types get their own `BufferBuilder` in `RenderBuffers`; everything else
 shares one. Asking for a second type partway through the bone recursion ends the in-progress batch
@@ -113,7 +125,11 @@ it — which showed up as the lizard's tail and legs rendering fullbright and se
 swap from a layer's `render` instead, which `defaultRender` invokes after `actuallyRender` has
 written the whole model. Bone matrices have to be carried across from `renderForBone` to get there:
 `GeoEntityRenderer.actuallyRender` pushes the entity rotation and model transforms and pops them
-before layers run, keeping the model-space matrix in a private field.
+before layers run, keeping the model-space matrix in a field of its own (`modelRenderTranslations`,
+`protected` in 4.3.1) that is not the per-bone pose the layer needs anyway. The 4.3.1 pipeline order
+was confirmed from bytecode: `defaultRender` → `preRender` → `actuallyRender` (bone recursion:
+`renderCubesOfBone`, then `applyRenderLayersForBone` → `renderForBone`, then children) →
+`applyRenderLayers` → layer `render` → `postRender` → `renderFinal`.
 
 ### GeckoLib asset contract
 
@@ -131,11 +147,15 @@ After any Blockbench re-export, check all three.
 
 Two GeckoLib timing rules this mob depends on, both learned the hard way:
 
-- **Controllers only tick while the entity is being rendered.** `handleAnimations` is called from
-  `GeoEntityRenderer.preRender`, which `defaultRender` skips when the render type is null — which is
-  what happens for an invisible entity. A dormant lizard is `setInvisible(true)`, so its controller
-  is frozen at the bind pose the whole time it is buried. That rules out representing dormancy as a
-  held "buried" animation: it would never be processed.
+- **Controllers only tick while the entity's renderer runs, and what that means is GeckoLib-version
+  specific.** On `main` (4.8.4) `handleAnimations` is called from `GeoEntityRenderer.preRender`,
+  which `defaultRender` skips when the render type is null — what happens for an invisible entity —
+  so a dormant lizard's controller is frozen at the bind pose the whole time it is buried. In 4.3.1
+  (this branch) `handleAnimations` runs from `actuallyRender` *before* the `isInvisibleTo` gate and
+  `GeoModel.getRenderType` never returns null, so the controller does keep ticking while buried; the
+  predicate returns `PlayState.STOP` there so nothing is visible either way. Dormancy is still not
+  represented as a held "buried" animation, because on `main` it would never be processed and the
+  two versions must behave the same.
 - **An animation does not begin on its first frame.** GeckoLib first spends `transitionLength` ticks
   blending into that frame from the model's current pose, and starts the animation's clock only
   afterwards. Any animation whose first frame is displaced from the rest pose — `appear` starts 0.81
@@ -154,15 +174,25 @@ roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4` (the midpoint of the 1.20.x stone→deepslate blend band, unchanged between 1.20.1 and
+1.20.2), not by sampling blocks.
 
 ## Repo gotchas
 
 - `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
   dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
-  `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it.
+  `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it. GeckoLib 4.3.1
+  nests the very same `mclib-20.jar` as 4.8.4 (identical entries, only zip timestamps differ), so
+  the checked-in copy is shared with `main` unchanged. `./gradlew build` does not need it; only the
+  `run*` tasks do.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
-  group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
+  group-id churn — the coordinate in `gradle.properties` is opaque on purpose. 4.3.1 is
+  `496UKM7k`, the GeckoLib release Modrinth lists for 1.20.2 (and only 1.20.2); it is *older* than
+  `main`'s 4.8.4, because GeckoLib's 1.20.1 branch kept releasing long after 1.20.2's stopped. Its
+  own `fabric.mod.json` declares `minecraft >=1.20.2` and nothing higher, so ours pins
+  `"minecraft": "1.20.2"` exactly.
+  Loom remaps it to Mojang names under `.gradle/loom-cache/remapped_mods/`, which is the jar to
+  `javap` when checking an API shape.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
   remote. Ignore it; don't edit anything inside it.
 - `orelizards.mixins.json` is wired up but has no mixins yet.
