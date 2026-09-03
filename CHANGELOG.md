@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.2.0+mc26.2
+
+A port of 1.2.0 to Minecraft 26.2 (Fabric Loader 0.19.5, Fabric API 0.159.0, GeckoLib 5.5.4, Java 25),
+built on top of the 1.21.11 port below. The mob is meant to behave exactly as it does on 1.20.1.
+Everything the `## 1.2.0+mc1.21.11`, `## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1`
+sections list still applies here unchanged - the submit/collector rendering with per-bone tasks, the
+render-state `DataTicket`s, `ValueOutput`/`ValueInput` saves, `hurtServer`, the pickaxes tag plus the
+diamond-ore harvest check standing in for "iron or better", the baked spawn egg texture and its item
+model definition, the `STEP_HEIGHT` attribute, the id-keyed flee modifier, the packed-int tint colours,
+vanilla's `EntityType.Builder`, `Item.Properties.setId`/`spawnEgg`, and no `mclib` jar (GeckoLib 5.5.4
+has no `META-INF/jars/` either) - and is not repeated. Below is only what 26.2 and the GeckoLib
+5.4 → 5.5 jump forced on top of that. Plain renames are not listed: GeckoLib's root package is now
+`com.geckolib` (was `software.bernie.geckolib`, every class otherwise where 5.4 had it),
+`LightTexture.FULL_BRIGHT` is `net.minecraft.util.LightCoordsUtil.FULL_BRIGHT`, and Fabric API's
+item-group module became `fabric-creative-tab-api-v1`, so `ItemGroupEvents.modifyEntriesEvent` is
+`CreativeModeTabEvents.modifyOutputEvent` with the same tab key and the same "append to the tab"
+semantics. Every vanilla signature the common side uses (`finalizeSpawn`, `hurtServer`,
+`dropCustomDeathLoot`, `checkDespawn`, the save-data views, `SpawnEggItem`, `EntityType.Builder`, the
+attribute, heightmap, tag, particle and sound constants) is unchanged from 1.21.11.
+
+### Changed
+
+- **The tint pass is submitted one collector order after the body, like the glow already was.** On
+  1.21.11 the tint went into the model's own render type at the body's order 0 and relied on the
+  collector keeping one list per render type in submission order, which guaranteed it was appended
+  after the body's quads; only the glow needed order 1. 26.2 has no per-render-type lists. A
+  submission goes into a *phase* of the collection for its order, chosen by its render type
+  (`SubmitNodeCollection.submitCustomGeometry`: outline types to the outline phase, blending types such
+  as `eyes` to translucent custom geometry, everything else - the body and the tint - to solid); a
+  phase holds every feature's submissions in a single list, and `SimpleFeatureRenderPhase.maybeShuffle`
+  shuffles that list when `SharedConstants.DEBUG_SHUFFLE_MODELS` is on - Mojang's declaration that the
+  order of submissions within a phase is unspecified. What is guaranteed is the order between orders
+  (`SubmitNodeStorage` keys its collections in an `Int2ObjectAVLTreeMap`, drained ascending) and
+  between phases (`FeatureRenderDispatcher.renderAllFeatures` executes every solid phase, order by
+  order, before any translucent one). So both extra passes now go to order 1: the tint into order 1's
+  solid phase, after every order-0 solid draw, and the glow into order 1's translucent custom
+  geometry phase, after every solid draw including the tint. Vanilla's `EyesLayer` still submits at
+  order 1 on 26.2. Nothing visible changes - the tint is drawn at the same depth as the body with the
+  later draw winning, exactly as the appended draw did - it just rests on an ordering the collector
+  actually promises. The rule from the earlier ports reads, on 26.2: **never submit an extra pass at
+  the body's collector order** - not even in the body's own render type.
+- **The render state is named as `LivingEntityRenderState` instead of a bounded type parameter.**
+  GeckoLib 5.5 declares `EntityRenderState implements GeoRenderState` through a
+  `transitive-inject-interface` line in its class tweaker, which Loom applies to the dev jar and
+  Fabric Loader applies at runtime; `GeoEntityRenderer` itself dropped its `GeoRenderState` bound for
+  the same reason. `OreLizardRenderer` and `OreTintLayer` therefore use the concrete state class, and
+  the `R extends LivingEntityRenderState & GeoRenderState` intersection the 1.21.5 and 1.21.11 ports
+  needed is gone. Behaviourally identical; the object at runtime is the same `LivingEntityRenderState`.
+- **The build uses Loom's non-remapping plugin.** 26.x is published unobfuscated with Mojang's names
+  already in the jar, so `build.gradle` applies `net.fabricmc.fabric-loom` (not `fabric-loom-remap`),
+  has no `mappings` line, and declares the loader, Fabric API and GeckoLib as plain `implementation`
+  dependencies - the non-remapping plugin has no `modImplementation`. Loom still reads each mod's
+  `fabric.mod.json` and class tweaker from there: `CreativeModeTabs.SPAWN_EGGS` is private in 26.2's
+  own source and `SpawnPlacements.register` still is, and both compile only because Fabric's
+  creative-tab and transitive-access-wideners modules re-open them transitively. Java 25 is required
+  by the game, Fabric API and GeckoLib alike, so the build declares a Java 25 toolchain (Gradle
+  auto-detects the JDK 25 it has provisioned under `~/.gradle/jdks`; the daemon itself may run on 21),
+  compiles with `--release 25`, and the mixin config's `compatibilityLevel` is `JAVA_25`, which the
+  Mixin 0.17.4 fork Fabric Loader 0.19.5 ships accepts. `fabric.mod.json` pins `minecraft` to `26.2`
+  and `java` to `>=25`.
+- **The zero-tick `appear`/`burrow` transition still applies on the frame it is requested** - a check,
+  not a change, repeated for GeckoLib 5.5.4 as the 1.21.11 notes ask for on every GeckoLib bump.
+  `AnimationController.checkControllerState` captures `transitionTicks` before calling the handler,
+  but `initializeNewAnimation` only uses that captured value when the animation was started through
+  `triggerAnim` (`triggeredAnimTime > 0`); for a handler-set animation it reads the field again after
+  the handler has returned, so `setTransitionTicks(0)` inside the handler governs the animation the
+  same call starts.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 26.2 + GeckoLib 5.5.4 and
+  smoke-tested on a headless dedicated server only. Everything the 1.21.11 section lists as unverified
+  still wants a look in a client, plus the two things this port changed in the layer: that the tint
+  submitted at order 1 lands on the two bones exactly as before (same depth as the body, drawn after
+  it - a visibly untinted `shards`/`eyes` pair would mean the solid-phase execution order is not what
+  the dispatcher bytecode says), and that the concrete `LivingEntityRenderState` is indeed the state
+  GeckoLib hands the layer (a `ClassCastException` on first render would say otherwise). Also
+  unverified: whether Iris maps the `eyes` render type to `gbuffers_spidereyes` on 26.2's
+  feature-renderer pipeline, and how a spectator sees a buried lizard.
+
 ## 1.2.0+mc1.21.11
 
 A port of 1.2.0 to Minecraft 1.21.11 (Fabric Loader 0.19.5, Fabric API 0.141.6, GeckoLib 5.4.5,

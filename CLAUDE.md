@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.21.11 (Java 21, Mojang official mappings) that adds a single mob: the
-Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 5.4.5 drives its model/animations.
+A Fabric mod for Minecraft 26.2 (Java 25, Mojang's official names - 26.x ships unobfuscated) that adds
+a single mob: the Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor
+when a player walks near, flees, then burrows back down. GeckoLib 5.5.4 drives its model/animations.
 
-This branch (`1.21.11`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.5` port
-branch (itself on top of `1.21.4` and `1.21.1`; there is no intermediate branch for 1.21.6–1.21.10,
-those changes are absorbed here); behaviour is meant to be identical, and the `## 1.2.0+mc1.21.11`,
-`## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections of
-[CHANGELOG.md](CHANGELOG.md) together list every place the port had to differ and why. When in doubt
-about *what the mob should do*, `main` is the source of truth.
+This branch (`26.2`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.11` port
+branch (itself on top of `1.21.5`, `1.21.4` and `1.21.1`; there is no branch for 26.1); behaviour is
+meant to be identical, and the `## 1.2.0+mc26.2`, `## 1.2.0+mc1.21.11`, `## 1.2.0+mc1.21.5`,
+`## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections of [CHANGELOG.md](CHANGELOG.md) together list
+every place the port had to differ and why. When in doubt about *what the mob should do*, `main` is
+the source of truth.
 
 ## Commands
 
 ```bash
-./gradlew build          # compile + remap; jar lands in build/libs/orelizards-<version>.jar
+./gradlew build          # compile; jar lands in build/libs/orelizards-<version>.jar (no remap step on 26.x)
 ./gradlew runClient      # launch a dev client (world data under run/)
 ./gradlew runServer      # launch a dev server
 ./gradlew genSources     # decompile Minecraft for navigating vanilla code
@@ -30,6 +30,13 @@ creative tab) when you need `finalizeSpawn` to run (variant assignment, deepslat
 dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards are *not* representative.
 
 Dependency versions live in [gradle.properties](gradle.properties), not `build.gradle`.
+
+The build needs a JDK 25 (`java { toolchain }` in `build.gradle`); Gradle finds the one it has
+auto-provisioned under `~/.gradle/jdks` even when the daemon runs on an older JVM. For API archaeology,
+`javap -p -cp <jar>` works directly on the Minecraft jar Loom caches at
+`~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-deobf/26.2/` and on the
+GeckoLib jar from the Gradle module cache — neither is remapped, so there is no `remapped_mods` copy to
+hunt for.
 
 ## Architecture
 
@@ -131,41 +138,45 @@ missing-model placeholder; the item's registry key (`Item.Properties.setId`) is 
 to find it.
 
 The `shards` and `eyes` bones get a third, emissive pass through `RenderTypes.eyes` (vanilla's
-enderman/spider eye overlay type, under `net.minecraft.client.renderer.rendertype` since 1.21.9,
-pipeline `RenderPipelines.EYES` — coincidental name clash with our own `eyes` bone): fullbright and
-additive in vanilla, and mapped to `gbuffers_spidereyes` by Iris/OptiFine so shader packs treat it as
-emissive. Deliberately *not* GeckoLib's `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask`
-texture and a custom render pipeline that shader packs have no convention for. The pass is skipped
-for invisible (dormant) lizards.
+enderman/spider eye overlay type, under `net.minecraft.client.renderer.rendertype`, pipeline
+`RenderPipelines.EYES` — coincidental name clash with our own `eyes` bone): fullbright and additive in
+vanilla, and mapped to `gbuffers_spidereyes` by Iris/OptiFine so shader packs treat it as emissive.
+Deliberately *not* GeckoLib's `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask` texture and a
+custom render pipeline that shader packs have no convention for. The pass is skipped for invisible
+(dormant) lizards.
 
-**Rendering is submission, not drawing — and render types are only ordered across collector
-orders.** Since 1.21.9 an entity renderer hands geometry to a `SubmitNodeCollector`; each submission
-records its render type and a *copy* of the pose, and vanilla plays everything back once all entities
-are in, one buffer per render type, one collector order (`order(n)`, ascending) at a time. GeckoLib
-5.4's model pass is a single `submitCustomGeometry`, and a layer's per-bone tasks
-(`GeoRenderLayer.addPerBoneRender`) run at submission time with the pose stack placed at the bone —
-so they submit too, and the bone-pose bookkeeping the 1.20.1 and 1.21.5 layers were mostly made of
-is gone. Two consequences `OreTintLayer` is built around:
+**Rendering is submission, not drawing — and the only ordering the collector promises is between
+collector orders and between phases.** An entity renderer hands geometry to a `SubmitNodeCollector`;
+each submission records its render type and a *copy* of the pose under the collector order it was
+submitted at (`order(n)`, default 0). GeckoLib 5.5's model pass is a single `submitCustomGeometry`,
+and a layer's per-bone tasks (`GeoRenderLayer.addPerBoneRender`) run at submission time with the pose
+stack placed at the bone — so they submit too, and there is no bone-pose bookkeeping to do. What
+happens next on 26.2, and why `OreTintLayer` submits **both** of its passes at `order(1)`:
 
-- The tint pass is submitted into the model's *own* render type at the default order. The collector
-  keeps one list per render type in submission order, so it lands in the model's batch right after
-  the model's quads — the "append to the batch in progress" the 1.20.1 layer relied on, now
-  guaranteed by the collector rather than by us.
-- The glow is submitted at `order(1)`, exactly as vanilla's `EyesLayer` does. Within one order the
-  collector replays custom geometry per render type out of a `HashMap` — no ordering between types —
-  and `MultiBufferSource.BufferSource` still has a single shared builder for every type without a
-  dedicated buffer, which on 1.21.11 *includes the entity cutout types*, and draws it the moment a
-  different shared type is requested. Filed at order 0 next to the body, the glow could be drawn
-  first and painted over by the body (it writes no depth). Orders replay in sequence, each in full,
-  so an order-1 glow is buffered only after the body has been written. The old rule ("never request a
-  different render type's buffer while the model's batch is being written") is the same fact seen
-  from the drawing side; on the submit side it reads: **never submit an extra-pass render type at the
-  same order as the body.**
+- `SubmitNodeStorage` keeps one `SubmitNodeCollection` per order in an `Int2ObjectAVLTreeMap` and
+  drains them ascending. Within a collection a submission goes to a *phase* chosen by its render type
+  (`SubmitNodeCollection.submitCustomGeometry`: outline types → `outline`, types with blending such as
+  `eyes` → `translucentCustomGeometry`, everything else — the body's cutout type, and so the tint —
+  → `solid`). `FeatureRenderDispatcher.renderAllFeatures` executes every solid phase first, order by
+  order, and only then the translucent phases, again order by order.
+- Within a phase there is **no** promised order. A phase holds every feature's submissions in one list,
+  consecutive same-render-type submissions are batched into one draw of a shared `StagedVertexBuffer`
+  (`RenderTypeFeatureRenderer`), and `SimpleFeatureRenderPhase.maybeShuffle` shuffles the list
+  whenever `SharedConstants.DEBUG_SHUFFLE_MODELS` is set. The 1.21.11 collector's one-list-per-render-
+  type structure, which let the tint sit at order 0 as a guaranteed append to the body's batch, is gone.
+- So the body stays at order 0 and both extra passes go to order 1: the tint lands in order 1's solid
+  phase (after every order-0 solid draw, at the same depth as the body's quads, where the later draw
+  wins) and the glow in order 1's translucent custom geometry phase (after every solid draw, including
+  the tint; it writes no depth, so being drawn after the body is what keeps it from being painted
+  over). Vanilla's `EyesLayer` submits at order 1 on 26.2 as it did on 1.21.9+. The old rule ("never
+  request a different render type's buffer while the model's batch is being written") reads, on the
+  submit side of 26.2: **never submit an extra pass at the body's collector order — not even in the
+  body's own render type.**
 
 **Register per-bone tasks only when the model is actually drawn.** `RenderPassInfo.willRender()` is
 false when GeckoLib resolved no render type — an entity invisible to the viewer — and GeckoLib still
 runs every layer hook, and every task registered, in that case. On GeckoLib 5.1 registering anyway
-was an NPE inside GeckoLib (a never-captured pose); on 5.4 it would merely submit a tinted pair of
+was an NPE inside GeckoLib (a never-captured pose); on 5.4+ it would merely submit a tinted pair of
 bones for a lizard that is meant to draw nothing at all. `addPerBoneRender` returns early on
 `!willRender()`.
 
@@ -200,10 +211,11 @@ Two GeckoLib timing rules this mob depends on, both learned the hard way:
   transition, or the model visibly travels into position first. It also means a non-zero transition
   makes an animation finish that many ticks later than its authored length, which has to be accounted
   for against the state timer driving it. The handler sets the transition and the animation in the
-  same call, which only works because `AnimationController.checkControllerState` reads the transition
-  field *after* the handler returns when it builds a non-triggered animation's timeline (the value it
-  captured beforehand is only used for `triggerAnim` animations) — checked on 5.4.5; re-check it on
-  any GeckoLib bump.
+  same call, which only works because `AnimationController.checkControllerState` captures the
+  transition field *before* the handler but `initializeNewAnimation` only uses that captured value for
+  `triggerAnim` animations (`triggeredAnimTime > 0`); for a handler-set animation it reads the field
+  again after the handler has returned — checked on 5.5.4 (bytecode: `javap -c`), as on 5.4.5; re-check
+  it on any GeckoLib bump.
 
 ## Spawning
 
@@ -218,40 +230,93 @@ during worldgen before lighting exists and ignores player torches. Stone vs. dee
 by `Y < -4` (the midpoint of the stone→deepslate blend band, unchanged since 1.18), not by sampling
 blocks.
 
-Registration is `SpawnPlacements.register(...)`, which vanilla 1.21 made *private*. It compiles and
-runs because Fabric API's object-builder module ships a transitive access widener that re-opens it
-(Loom applies it to the dev jar; Fabric applies it at runtime). Don't "fix" the private call by
-switching to `FabricEntityTypeBuilder` — that class is deprecated here — and don't drop the Fabric
-API dependency thinking the mod only uses it for biome spawns.
+Registration is `SpawnPlacements.register(...)`, which vanilla made *private* in 1.21. It compiles and
+runs because Fabric API ships a transitive class tweaker that re-opens it (on 0.159 it is in both the
+object-builder module and `fabric-transitive-access-wideners-v1`; Loom applies it to the dev jar,
+Fabric applies it at runtime). The same goes for `CreativeModeTabs.SPAWN_EGGS`, which 26.2 made
+private and Fabric's creative-tab module re-opens. Don't "fix" either private call by hand — and don't
+drop the Fabric API dependency thinking the mod only uses it for biome spawns.
 
 ## Repo gotchas
 
+- **26.x is unobfuscated, so the build is Loom's *non-remapping* plugin**: `build.gradle` applies
+  `net.fabricmc.fabric-loom` (not `net.fabricmc.fabric-loom-remap`), there is no `mappings` line, and
+  the loader, Fabric API and GeckoLib are plain `implementation` dependencies — the non-remapping
+  plugin has no `modImplementation` and will fail configuration if you add one back. Loom still picks
+  up mod metadata and transitive class tweakers from `implementation` jars (that is how the private
+  vanilla members above compile). `loom_version` is still `1.17-SNAPSHOT` (resolves to 1.17.20+).
 - There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
   because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
-  GeckoLib 5.4.5 for 1.21.11 (like 5.1.0 for 1.21.5, 4.8.5 for 1.21.4 and 4.9.2 for 1.21.1) has no
-  `META-INF/jars/` at all and no mclib references, so the workaround was dropped along with its
-  `implementation files(...)` line.
+  GeckoLib 5.5.4 for 26.2 (like every 4.9+/5.x build the other ports use) has no `META-INF/jars/` at
+  all and no mclib references, so the workaround was dropped along with its `implementation files(...)`
+  line. If a future GeckoLib bump brings a nested jar back, `runClient`/`runServer` will fail with
+  `NoClassDefFoundError` and the fix is the same extract-and-reference dance described on `main`.
 - `run/` is git-ignored. The smoke-test scaffolding there (`eula.txt`, a `server.properties` with a
   non-default port, and a `world/datapacks/smoke` pack that summons a lizard on load — data pack
-  format 94 on 1.21.11, function folder `function`, not `functions`) is not part of the repo.
-- GeckoLib 5.4.5 no longer logs the `@Mixin target … EntityRenderer was not found` WARN that 5.1.0
-  did on a dedicated server. The one GeckoLib WARN a dev server still prints is Fabric's `Reference
-  map 'geckolib.refmap.json' … could not be read`, a development-environment artefact. Neither is
-  ours; don't chase them. If a future GeckoLib bump brings a nested jar back, `runClient`/`runServer`
-  will fail with `NoClassDefFoundError` and the fix is the same extract-and-reference dance described
-  on `main`.
+  format 107.1 on 26.2, `pack_format` plus `min_format`/`max_format` as `[major, minor]` arrays,
+  function folder `function`) is not part of the repo.
+- GeckoLib's `fabric.mod.json` declares `minecraft >=26.2`; ours pins `26.2`, the version GeckoLib
+  5.5.4 was built and published for.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
-  group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
+  group-id churn — the coordinate in `gradle.properties` is opaque on purpose. On 26.2 its root
+  package is `com.geckolib` (was `software.bernie.geckolib`), which is a rename of every import and
+  nothing else.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
   remote. Ignore it; don't edit anything inside it.
-- `orelizards.mixins.json` is wired up but has no mixins yet.
+- `orelizards.mixins.json` is wired up but has no mixins yet. Its `compatibilityLevel` is `JAVA_25`,
+  which the Mixin 0.17.4 fork shipped by Fabric Loader 0.19.5 accepts (GeckoLib's own config still
+  says `JAVA_17`; either works for an empty mixin list).
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
 
-## 1.21.11-specific API notes
+## 26.2-specific API notes
 
-Things that bit during the port (1.21.1 first, then 1.21.4, 1.21.5 and 1.21.11 on top) and will bite
-again on any further bump. The 1.21.11 / GeckoLib 5.4 additions first:
+Things that bit during the port (1.21.1 first, then 1.21.4, 1.21.5, 1.21.11 and 26.2 on top) and will
+bite again on any further bump. The 26.2 / GeckoLib 5.5 additions first:
+
+- **GeckoLib's root package is `com.geckolib`.** Every class is where 5.4 had it under the new root:
+  `com.geckolib.animatable.GeoEntity`, `animatable.instance.AnimatableInstanceCache`,
+  `animatable.manager.AnimatableManager`, `animation.AnimationController`, `animation.RawAnimation`,
+  `animation.object.PlayState`, `animation.state.AnimationTest`, `model.GeoModel`,
+  `renderer.GeoEntityRenderer`, `renderer.base.{GeoRenderer,GeoRenderState,RenderPassInfo,PerBoneRender}`,
+  `renderer.layer.GeoRenderLayer`, `cache.model.GeoBone`, `cache.model.cuboid.{CuboidGeoBone,GeoCube}`,
+  `constant.dataticket.DataTicket`, `util.GeckoLibUtil`. Hook signatures are unchanged from 5.4.
+- **`GeoEntityRenderer<T, R extends EntityRenderState>` — no `GeoRenderState` bound any more**, because
+  GeckoLib's class tweaker injects `GeoRenderState` into `EntityRenderState` *transitively*
+  (`transitive-inject-interface`), so in a Loom dev environment `LivingEntityRenderState` *is* a
+  `GeoRenderState` at compile time. `OreLizardRenderer`/`OreTintLayer` name it concretely. If a future
+  GeckoLib drops the transitive injection, the compile error is on the `extends` clauses and the fix is
+  the 1.21.11 shape: `R extends LivingEntityRenderState & GeoRenderState` as a type parameter.
+- **`LightTexture` is gone; `FULL_BRIGHT` is `net.minecraft.util.LightCoordsUtil.FULL_BRIGHT`.** The
+  client's lightmap object is `Lightmap`; the packing helpers (`pack`, `block`, `sky`) are on
+  `LightCoordsUtil` too.
+- **`MultiBufferSource`/`BufferSource` no longer exist.** Playback is `FeatureRenderDispatcher` over
+  `SubmitNodeStorage` → per-order `SubmitNodeCollection` → per-render-type phases → `FeatureRenderer`s
+  (`CustomFeatureRenderer` for `submitCustomGeometry`) writing into one `StagedVertexBuffer`. The
+  `SubmitNodeCollector.CustomGeometryRenderer` callback is still `(PoseStack.Pose, VertexConsumer)`,
+  `order(int)` still returns an `OrderedSubmitNodeCollector`, and `RenderTypes.eyes(Identifier)` is
+  unchanged. `RenderTypes.entityCutoutNoCull` is `entityCutout(Identifier)` (GeckoLib's default render
+  type; we never name it).
+- **Fabric API: the item-group module is `fabric-creative-tab-api-v1`.** `ItemGroupEvents` is
+  `net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents`, `modifyEntriesEvent` is
+  `modifyOutputEvent(ResourceKey<CreativeModeTab>)`, and the callback receives a
+  `FabricCreativeModeTabOutput` (a `CreativeModeTab.Output`, so `accept(ItemLike)` works).
+  `EntityRendererRegistry`, `BiomeModifications.addSpawn`, `BiomeSelectors.foundInOverworld` and
+  `FabricDefaultAttributeRegistry.register` are unchanged.
+- **Every common-side vanilla signature is unchanged from 1.21.11**: `Mob.finalizeSpawn(ServerLevelAccessor,
+  DifficultyInstance, EntitySpawnReason, SpawnGroupData)`, `LivingEntity.hurtServer(ServerLevel,
+  DamageSource, float)`, `dropCustomDeathLoot(ServerLevel, DamageSource, boolean)`,
+  `addAdditionalSaveData(ValueOutput)`/`readAdditionalSaveData(ValueInput)`, `SpawnEggItem(Item.Properties)`
+  with `Item.Properties.spawnEgg`, `EntityType.Builder.of/sized/clientTrackingRange/build(ResourceKey)`,
+  `Attributes.STEP_HEIGHT`, `Heightmap.Types.{WORLD_SURFACE,MOTION_BLOCKING}`,
+  `BlockTags.BASE_STONE_OVERWORLD`, `ItemTags.PICKAXES`, `EntityGetter.getNearestPlayer` (via `Level`),
+  `ParticleTypes.{FIREWORK,BLOCK}`, `BlockParticleOption(ParticleType, BlockState)`, the STONE/DEEPSLATE
+  sound events, `AttributeModifier(Identifier, double, Operation)` and `Identifier.fromNamespaceAndPath`.
+- **Java 25 everywhere**: game, Fabric API 0.159 (`java >=25`) and GeckoLib 5.5.4 (`java >=25`).
+  `options.release = 25`, source/target 25, toolchain 25, `fabric.mod.json` `java >=25`, mixin
+  `JAVA_25`.
+
+Carried over from the 1.21.11 port:
 
 - **`ResourceLocation` is `Identifier`** (`net.minecraft.resources.Identifier`, still
   `fromNamespaceAndPath`); `ResourceKey` and `Registries` are unchanged. `Level.isClientSide` is a
@@ -263,49 +328,39 @@ again on any further bump. The 1.21.11 / GeckoLib 5.4 additions first:
 - **`SpawnEggItem(Item.Properties)` only.** The mob is a default data component set with
   `Item.Properties.spawnEgg(EntityType)`, chained after `setId`.
 - **`RenderType` lives in `net.minecraft.client.renderer.rendertype`; the factories are on
-  `RenderTypes`** (`RenderTypes.eyes`, `RenderTypes.entityCutoutNoCull`), the pipelines on
-  `RenderPipelines`. Entity renderers implement `submit(S, PoseStack, SubmitNodeCollector,
-  CameraRenderState)`, not `render`; `SubmitNodeCollector.submitCustomGeometry(PoseStack, RenderType,
+  `RenderTypes`**, the pipelines on `RenderPipelines`. Entity renderers implement `submit(S, PoseStack,
+  SubmitNodeCollector, CameraRenderState)`, not `render`; `submitCustomGeometry(PoseStack, RenderType,
   (pose, vertexConsumer) -> …)` copies `poseStack.last()` at the call and `order(int)` picks the
   replay order (see *Variants and rendering* for why that matters).
-- **GeckoLib 5.4's layer hooks all take a `RenderPassInfo<R>`:** `addRenderData(T, O, R, float
+- **GeckoLib 5.4+'s layer hooks all take a `RenderPassInfo<R>`:** `addRenderData(T, O, R, float
   partialTick)`, `preRender(RenderPassInfo<R>, SubmitNodeCollector)`,
   `addPerBoneRender(RenderPassInfo<R>, BiConsumer<GeoBone, PerBoneRender<R>>)` and
   `submitRenderTask(RenderPassInfo<R>, SubmitNodeCollector)` (was `render`). `PerBoneRender` is
   `(RenderPassInfo<R>, GeoBone, SubmitNodeCollector)`. `RenderPassInfo` carries `renderState()`,
   `poseStack()`, `model()`, `packedLight()`, `packedOverlay()`, `renderColor()` and `willRender()`.
   `renderCubesOfBone` is gone (see the next note). `GeoModel.addAdditionalStateData(T, @Nullable
-  Object relatedObject, GeoRenderState)` grew a middle argument; `GeoEntityRenderer.withRenderLayer`
-  replaces `addRenderLayer`; `BakedGeoModel`/`GeoBone` are under `cache.model`, `CuboidGeoBone`/`GeoCube`
-  under `cache.model.cuboid`, the built-in layers under `renderer.layer.builtin`.
+  Object relatedObject, GeoRenderState)` has a middle argument; `GeoEntityRenderer.withRenderLayer`
+  replaces `addRenderLayer`; the built-in layers are under `renderer.layer.builtin`.
 - **Drawing one bone from a per-bone task.** The task's pose stack sits *at the bone's pivot* with the
-  parent chain and this frame's animation applied (`RenderUtil.transformToBone`). In the playback
-  callback: fresh `PoseStack`, `last().set(pose)`, `bone.translateAwayFromPivotPoint`, then
-  `cube.render(…)` for each of `((CuboidGeoBone) bone).cubes` inside its own push/pop — `GeoCube.render`
-  does not restore the stack; `CuboidGeoBone.render` is what does the push/pop. Do not call
-  `bone.render`/`positionAndRender` from there: they re-apply the bone transform, and the animation
-  snapshot is gone again by playback time anyway. This is GeckoLib's own `CustomBoneTextureGeoLayer`
-  recipe.
-- **`AnimationController` is `software.bernie.geckolib.animation.AnimationController` again**, `PlayState`
-  is `animation.object.PlayState`, `AnimationTest` is `animation.state.AnimationTest`, and
+  parent chain and this frame's animation applied. In the playback callback: fresh `PoseStack`,
+  `last().set(pose)`, `bone.translateAwayFromPivotPoint`, then `cube.render(…)` for each of
+  `((CuboidGeoBone) bone).cubes` inside its own push/pop — `GeoCube.render` does not restore the stack;
+  `CuboidGeoBone.render` is what does the push/pop. Do not call `bone.render`/`positionAndRender` from
+  there: they re-apply the bone transform, and the animation snapshot is gone again by playback time
+  anyway. This is GeckoLib's own `CustomBoneTextureGeoLayer` recipe.
+- **`AnimationController` is `animation.AnimationController`**, `PlayState` is
+  `animation.object.PlayState`, `AnimationTest` is `animation.state.AnimationTest`, and
   `transitionLength(int)` is `setTransitionTicks(int)`.
 - **`GeoRenderState.getGeckolibData` returns `null`** (it threw on 5.1) for a key that was never added —
   unboxing an `Integer` from it is an NPE — so keep using `getOrDefaultGeckolibData`.
 - **`PoseStack.Pose.set(Pose)` is public vanilla API**, so the matrix-copy workaround the 1.21.5 layer
-  needed (GeckoLib's access widener is not transitive) is moot; the general caution still applies to
-  anything else GeckoLib widens for itself.
-- **Data pack format is 94, resource pack format 75** (from the client jar's `version.json`). The
-  1.21.4-style item model definition and the baked egg texture load as they are.
+  needed is moot; the general caution still applies to anything else GeckoLib widens for itself.
 
 Carried over from the 1.21.5 port:
 
 - **GeckoLib 5 is a different renderer API.** `GeoModel.getModelResource`/`getTextureResource` take a
   `GeoRenderState` (only `getAnimationResource` still takes the entity); there is no `renderForBone`.
-  `GeoEntityRenderer<T, R extends EntityRenderState & GeoRenderState>` is generic in the render state,
-  and since vanilla's state classes only implement `GeoRenderState` through a runtime mixin (no
-  interface injection), `OreLizardRenderer` and `OreTintLayer` keep `R` as a type parameter with that
-  bound, as GeckoLib's own `DirectionalProjectileRenderer` does; `OreLizardRenderer::new` still
-  satisfies `EntityRendererRegistry.register` (javac infers the intersection).
+  The renderer is generic in the render state — see the 26.2 notes for how that is spelt now.
 - **`DataTicket.create(id, Class)` dedupes on (type, id) across every mod** — namespace the id
   (`"orelizards:tint_color"`).
 - **`AnimationController` no longer takes the animatable**, and needs its type argument spelt out
@@ -332,14 +387,14 @@ Carried over from the 1.21.4 port:
 - **`MobSpawnType` is `EntitySpawnReason`** (in `canSpawn`, `finalizeSpawn` and
   `SpawnPlacements.SpawnPredicate`). `spawnAtLocation` needs the `ServerLevel`, which
   `dropCustomDeathLoot` already receives.
-- **The renderer's own packed-ARGB `renderColor` is available to layers** (`RenderPassInfo.renderColor()`
-  on 5.4; a trailing hook argument on 4.8.5–5.1). `OreTintLayer` ignores it on purpose (the variant
-  tint is meant to multiply the texture as written), which also means a spectator's translucent
-  ghost of a dormant lizard gets opaque tinted bones — unverified in a client, see the changelog.
+- **The renderer's own packed-ARGB `renderColor` is available to layers** (`RenderPassInfo.renderColor()`).
+  `OreTintLayer` ignores it on purpose (the variant tint is meant to multiply the texture as written),
+  which also means a spectator's translucent ghost of a dormant lizard gets opaque tinted bones —
+  unverified in a client, see the changelog.
 
 Carried over from the 1.21.1 port:
 
-- **Attribute modifiers are keyed by `ResourceLocation` (`Identifier` here), not `UUID`.** `AttributeModifier(id, amount,
+- **Attribute modifiers are keyed by `Identifier`, not `UUID`.** `AttributeModifier(id, amount,
   operation)` — no name string — and `AttributeInstance.hasModifier/getModifier/removeModifier` take
   the id. Ours is `orelizards:flee_speed_boost`. `Operation.MULTIPLY_TOTAL` is now
   `ADD_MULTIPLIED_TOTAL` (same maths).
@@ -349,11 +404,9 @@ Carried over from the 1.21.1 port:
   `this.entityData`. `finalizeSpawn` lost its trailing `CompoundTag`; `dropCustomDeathLoot` is
   `(ServerLevel, DamageSource, boolean)` — the looting multiplier is gone.
 - **GeckoLib 4.5+ takes colours as one packed ARGB `int`**, not four floats — the same form
-  `VertexConsumer.setColor(int)` eats (`GeoCube.render`'s last argument on 5.4). Forget the alpha byte
-  and the bone renders fully transparent. `OreTintLayer` has `opaque()`/`scaleRgb()` helpers for this;
-  use them rather than hand-packing.
+  `VertexConsumer.setColor(int)` eats (`GeoCube.render`'s last argument). Forget the alpha byte and the
+  bone renders fully transparent. `OreTintLayer` has `opaque()`/`scaleRgb()` helpers for this; use them
+  rather than hand-packing.
 - **GeckoLib's `core` package is gone.** `AnimatableInstanceCache` is under
-  `software.bernie.geckolib.animatable.instance`; `RawAnimation` is directly under
-  `software.bernie.geckolib.animation` (see the 1.21.11 notes for where `AnimationController`,
-  `PlayState` and `AnimatableManager` live now).
+  `animatable.instance`; `RawAnimation` is directly under `animation`.
 - **`new ResourceLocation(ns, path)` is private** — use `fromNamespaceAndPath` (on `Identifier` here).

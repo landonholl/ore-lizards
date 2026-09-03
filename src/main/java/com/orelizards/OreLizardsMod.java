@@ -6,7 +6,7 @@ import com.orelizards.registry.ModItems;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.biome.v1.BiomeModifications;
 import net.fabricmc.fabric.api.biome.v1.BiomeSelectors;
-import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricDefaultAttributeRegistry;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.entity.MobCategory;
@@ -27,8 +27,12 @@ public class OreLizardsMod implements ModInitializer {
 		ModEntities.register();
 		ModItems.register();
 		FabricDefaultAttributeRegistry.register(ModEntities.ORE_LIZARD, OreLizardEntity.createAttributes());
-		ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.SPAWN_EGGS)
-				.register(entries -> entries.accept(ModItems.ORE_LIZARD_SPAWN_EGG));
+		// Fabric API 0.159 (26.2) renamed the item-group module: ItemGroupEvents.modifyEntriesEvent is
+		// CreativeModeTabEvents.modifyOutputEvent, same tab key, same "append to the tab" semantics.
+		// CreativeModeTabs.SPAWN_EGGS is private in 26.2's own source; it compiles because Fabric's
+		// creative-tab module ships a transitive class tweaker that re-opens the tab keys.
+		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.SPAWN_EGGS)
+				.register(output -> output.accept(ModItems.ORE_LIZARD_SPAWN_EGG));
 		// MOTION_BLOCKING heightmap matches the vanilla Bat's own spawn registration convention.
 		SpawnPlacements.register(ModEntities.ORE_LIZARD, SpawnPlacementTypes.ON_GROUND,
 				Heightmap.Types.MOTION_BLOCKING, OreLizardEntity::canSpawn);

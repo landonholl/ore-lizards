@@ -1,5 +1,7 @@
 plugins {
-	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	// Minecraft 26.x ships unobfuscated, so this is Loom's non-remapping plugin id (net.fabricmc.fabric-loom),
+	// not net.fabricmc.fabric-loom-remap: there is no mappings dependency and no remap step anywhere.
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'maven-publish'
 }
 
@@ -38,14 +40,16 @@ loom {
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	mappings loom.officialMojangMappings()
-	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	// No `mappings` line: Mojang publishes 26.x with its official names already in the jar.
+	// The non-remapping Loom plugin has no modImplementation configuration either - mods are plain
+	// implementation dependencies, and Loom still picks their fabric.mod.json / class tweakers up from there.
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
 	// Fabric API
-	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
 	// GeckoLib - animation library for the buried/erupt/flee/dig-down state machine
-	modImplementation "${project.geckolib_version}"
+	implementation "${project.geckolib_version}"
 }
 
 processResources {
@@ -57,12 +61,18 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 21
+	it.options.release = 25
 }
 
 java {
+	// Minecraft 26.2 runs on Java 25. The toolchain makes Gradle compile with, and launch runServer/runClient
+	// on, a JDK 25 even when the Gradle daemon itself is on an older JVM (Gradle auto-detects the JDKs it has
+	// provisioned under ~/.gradle/jdks).
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_21
-	targetCompatibility = JavaVersion.VERSION_21
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
 }

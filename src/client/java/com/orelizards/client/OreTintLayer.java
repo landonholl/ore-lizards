@@ -1,23 +1,23 @@
 package com.orelizards.client;
 
+import com.geckolib.cache.model.GeoBone;
+import com.geckolib.cache.model.cuboid.CuboidGeoBone;
+import com.geckolib.cache.model.cuboid.GeoCube;
+import com.geckolib.constant.dataticket.DataTicket;
+import com.geckolib.renderer.base.GeoRenderer;
+import com.geckolib.renderer.base.PerBoneRender;
+import com.geckolib.renderer.base.RenderPassInfo;
+import com.geckolib.renderer.layer.GeoRenderLayer;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.orelizards.entity.OreLizardEntity;
-import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.OrderedSubmitNodeCollector;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.state.LivingEntityRenderState;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.resources.Identifier;
-import software.bernie.geckolib.cache.model.GeoBone;
-import software.bernie.geckolib.cache.model.cuboid.CuboidGeoBone;
-import software.bernie.geckolib.cache.model.cuboid.GeoCube;
-import software.bernie.geckolib.constant.dataticket.DataTicket;
-import software.bernie.geckolib.renderer.base.GeoRenderState;
-import software.bernie.geckolib.renderer.base.GeoRenderer;
-import software.bernie.geckolib.renderer.base.PerBoneRender;
-import software.bernie.geckolib.renderer.base.RenderPassInfo;
-import software.bernie.geckolib.renderer.layer.GeoRenderLayer;
+import net.minecraft.util.LightCoordsUtil;
 
 import java.util.List;
 import java.util.function.BiConsumer;
@@ -29,22 +29,27 @@ import java.util.function.BiConsumer;
  * <p>Both bones then get a further emissive pass, so they read as glowing crystal rather than
  * painted rock - the mob was very hard to pick out against cave stone otherwise.
  *
- * <p><b>1.21.9+ / GeckoLib 5.4 shape.</b> Entity renderers no longer draw. They <em>submit</em>
- * geometry to a {@link SubmitNodeCollector}, which records each submission's render type and a copy
- * of its pose; vanilla then plays every submission back grouped by render type once all entities are
- * in, fetching one buffer per type. GeckoLib follows suit: its model pass is one
- * {@code submitCustomGeometry} call, and a layer's per-bone tasks ({@link #addPerBoneRender}) run at
- * submission time with the pose stack placed at the bone, so they too submit rather than draw. That
- * dissolves the problem the 1.20.1 and 1.21.5 layers spent most of their code on - getting hold of a
- * bone's pose after the model had been written - because the collector captures the pose for us at
- * the moment the task runs. What is left of the three-pass structure is therefore small: the base
- * model (GeckoLib's own submission), the tint re-draw of the two bones (submitted from their per-bone
- * task into the model's own render type), and the emissive re-draw (submitted from the same task
- * into vanilla's {@code eyes} render type, one order later - see {@link #submitBonePasses} for why).
- * Everything the passes need from the entity is copied into the render state in
- * {@link #addRenderData} or already there on the vanilla state.
+ * <p><b>26.2 / GeckoLib 5.5 shape.</b> Entity renderers do not draw. They <em>submit</em> geometry to
+ * a {@link SubmitNodeCollector}, which records each submission's render type and a copy of its pose
+ * under the collector order it was submitted at; once every entity is in, vanilla sorts each order's
+ * submissions into phases (solid, translucent custom geometry, outline, ...), batches each phase by
+ * render type into one shared {@code StagedVertexBuffer}, and executes those draws in sequence.
+ * GeckoLib follows suit: its model pass is one {@code submitCustomGeometry} call, and a layer's
+ * per-bone tasks ({@link #addPerBoneRender}) run at submission time with the pose stack placed at the
+ * bone, so they too submit rather than draw, and the collector captures the bone's pose for us at the
+ * moment the task runs. What is left of the three-pass structure is therefore small: the base model
+ * (GeckoLib's own submission), the tint re-draw of the two bones (submitted from their per-bone task
+ * into the model's own render type), and the emissive re-draw (submitted from the same task into
+ * vanilla's {@code eyes} render type) - both extra passes one collector order after the body, see
+ * {@link #submitBonePasses} for why. Everything the passes need from the entity is copied into the
+ * render state in {@link #addRenderData} or already there on the vanilla state.
+ *
+ * <p>The render state is named outright as {@link LivingEntityRenderState}: GeckoLib 5.5 injects its
+ * {@code GeoRenderState} interface into vanilla's {@code EntityRenderState} through a transitive class
+ * tweaker, which Loom applies to the dev jar, so the intersection-bounded type parameter earlier ports
+ * needed is gone (see {@link OreLizardRenderer}).
  */
-public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> extends GeoRenderLayer<OreLizardEntity, Void, R> {
+public class OreTintLayer extends GeoRenderLayer<OreLizardEntity, Void, LivingEntityRenderState> {
 	private static final String SHARDS_BONE = "shards";
 	private static final String EYES_BONE = "eyes";
 
@@ -61,11 +66,11 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	private static final float GLOW_STRENGTH = 0.7F;
 
 	/**
-	 * The submission order the emissive pass goes into. Vanilla's own {@code EyesLayer} (spider and
-	 * enderman eyes) submits at exactly this order for exactly the reason given in
-	 * {@link #submitBonePasses}; the body and the tint stay at the default order 0.
+	 * The collector order both extra passes are submitted at, one after the body's default order 0.
+	 * Vanilla's own {@code EyesLayer} (spider and enderman eyes) submits at exactly this order for the
+	 * reason given in {@link #submitBonePasses}.
 	 */
-	private static final int GLOW_SUBMIT_ORDER = 1;
+	private static final int EXTRA_PASS_SUBMIT_ORDER = 1;
 
 	/**
 	 * The variant's tint colour, carried in the render state. GeckoLib 5 draws from a snapshot of the
@@ -73,18 +78,18 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	 * entity: the colour is copied in by {@link #addRenderData} during extraction and read back through
 	 * this ticket in the per-bone task. The id is namespaced because {@code DataTicket.create} dedupes
 	 * on (type, id), so a bare "tint_color" would silently share a ticket with any other mod that picked
-	 * the same name. Invisibility no longer needs a ticket of its own: vanilla's
+	 * the same name. Invisibility needs no ticket of its own: vanilla's
 	 * {@code EntityRenderState.isInvisible} is {@code Entity.isInvisible()} at extraction time, which is
 	 * what the 1.20.1 code checked directly.
 	 */
 	private static final DataTicket<Integer> TINT_COLOR = DataTicket.create("orelizards:tint_color", Integer.class);
 
-	public OreTintLayer(GeoRenderer<OreLizardEntity, Void, R> renderer) {
+	public OreTintLayer(GeoRenderer<OreLizardEntity, Void, LivingEntityRenderState> renderer) {
 		super(renderer);
 	}
 
 	@Override
-	public void addRenderData(OreLizardEntity animatable, Void relatedObject, R renderState, float partialTick) {
+	public void addRenderData(OreLizardEntity animatable, Void relatedObject, LivingEntityRenderState renderState, float partialTick) {
 		renderState.addGeckolibData(TINT_COLOR, animatable.getOreVariant().getTintColor());
 	}
 
@@ -95,11 +100,12 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	 * <p>Nothing is registered when the model isn't being drawn. {@code willRender()} is false when
 	 * GeckoLib resolved no render type - an entity invisible to the viewer - and a dormant lizard is
 	 * meant to draw nothing at all, tint included. (On GeckoLib 5.1 this guard was also load-bearing
-	 * against a null-pose NPE inside GeckoLib; 5.4's tasks no longer depend on a captured pose, so it is
+	 * against a null-pose NPE inside GeckoLib; 5.4+ tasks no longer depend on a captured pose, so it is
 	 * now purely the correct behaviour.)
 	 */
 	@Override
-	public void addPerBoneRender(RenderPassInfo<R> renderPassInfo, BiConsumer<GeoBone, PerBoneRender<R>> consumer) {
+	public void addPerBoneRender(RenderPassInfo<LivingEntityRenderState> renderPassInfo,
+			BiConsumer<GeoBone, PerBoneRender<LivingEntityRenderState>> consumer) {
 		if (!renderPassInfo.willRender()) {
 			return;
 		}
@@ -118,13 +124,10 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	 * a copy of the current pose (the bone's, courtesy of GeckoLib) and a callback vanilla invokes later
 	 * with the buffer for that render type.
 	 *
-	 * <p><b>Tint.</b> Goes into the very render type the model was submitted with, at the same order.
-	 * Vanilla files submissions per render type in submission order and writes each type's list into one
-	 * buffer, so this lands in the model's own batch, after the model's own quads - the same "append to
-	 * the batch in progress, never a swap" that the 1.20.1 layer relied on, now guaranteed by the
-	 * collector rather than by us. The renderer's own {@code renderColor} is deliberately not folded in:
-	 * the variant colour is meant to multiply the texture as written, and the 1.20.1 original never
-	 * modulated it by the base colour either.
+	 * <p><b>Tint.</b> Goes into the very render type the model was submitted with, so it is drawn with
+	 * the same pipeline, texture and lighting as the body and differs only in colour. The renderer's own
+	 * {@code renderColor} is deliberately not folded in: the variant colour is meant to multiply the
+	 * texture as written, and the 1.20.1 original never modulated it by the base colour either.
 	 *
 	 * <p><b>Glow.</b> Goes into {@link RenderTypes#eyes}, the render type vanilla uses for enderman and
 	 * spider eye overlays (coincidental name clash with our own "eyes" bone - the shards go through it
@@ -142,20 +145,28 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	 * Depth testing still applies (only the depth <em>write</em> mask is off), so this doesn't shine
 	 * through walls.
 	 *
-	 * <p><b>Why the glow is submitted one order later.</b> The old rule was "never ask the buffer source
-	 * for a different render type while the model's batch is being written", because every render type
-	 * without a dedicated buffer shares one builder, and asking for another shared type draws whatever
-	 * that builder holds. That is still how {@code MultiBufferSource.BufferSource} works on 1.21.11 -
-	 * and the entity cutout types are no longer among the dedicated buffers, so the body itself lives in
-	 * the shared builder now. The collector replays custom geometry per render type from a plain
-	 * {@code HashMap}, with no ordering between types: had the glow been filed at order 0 alongside the
-	 * body, the {@code eyes} list could be replayed first, drawn to the GPU the moment the body's type
-	 * was requested next, and then painted over by the body (which the glow, writing no depth, cannot
-	 * keep out). Orders are replayed in ascending sequence, each in full before the next, so submitting
-	 * the glow at order 1 means the body has already been written - and its batch is flushed by the
-	 * first shared-type request order 1 makes - before a single glow quad is buffered. The same ordering
-	 * property the 1.20.1 code got from doing the swap after the whole model, expressed in the
-	 * collector's terms; vanilla's {@code EyesLayer} does exactly this.
+	 * <p><b>Why both passes are submitted one order later.</b> Each pass has to be drawn <em>after</em>
+	 * the body: the tint at the same depth as the body's quads, where the later draw wins, and the glow
+	 * writing no depth, so the body would simply paint over it. The old rule - never ask the buffer
+	 * source for a different render type while the model's batch is being written - was one way of
+	 * guaranteeing that; the 1.21.11 collector's per-render-type submission lists were another. 26.2 has
+	 * neither. A submission goes into a phase of the collection for its order, chosen by its render
+	 * type ({@code SubmitNodeCollection.submitCustomGeometry}: outline types to the outline phase,
+	 * blending types like {@code eyes} to translucent custom geometry, everything else - the body and
+	 * the tint - to solid), a phase collects every feature's submissions in a single list, and
+	 * {@code SimpleFeatureRenderPhase.maybeShuffle} shuffles that list whenever
+	 * {@code SharedConstants.DEBUG_SHUFFLE_MODELS} is on - Mojang's way of saying that the order of
+	 * submissions <em>within</em> a phase is not something to rely on. What the collector does promise
+	 * is the order between orders (ascending; {@code SubmitNodeStorage} keys its collections in an
+	 * {@code Int2ObjectAVLTreeMap}) and between phases (a fixed list, solid before translucent custom
+	 * geometry): {@code FeatureRenderDispatcher.renderAllFeatures} executes every solid phase first,
+	 * order by order ascending, and only then the translucent ones, again order by order. So the body
+	 * stays at order 0 and both extra passes go to order 1: the tint lands in order 1's solid phase,
+	 * after every order-0 solid draw (the body's among them), and the glow in order 1's translucent
+	 * custom geometry phase, which executes after every solid phase - so after both the body and the
+	 * tint. Vanilla's own {@code EyesLayer} submits at order 1 for the same reason. Relative to the
+	 * 1.21.11 port only the tint moved (from order 0 to 1); nothing visible changes, it just rests on an
+	 * ordering the collector actually guarantees.
 	 *
 	 * <p>The glow is skipped entirely for an invisible lizard. A dormant one is meant to be undetectable,
 	 * and a glow is exactly the thing that would give it away. GeckoLib already submits nothing for an
@@ -163,8 +174,9 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 	 * vanilla shows invisible mobs as translucent ghosts: they get the tint but no glow - but it is the
 	 * one case where getting it wrong breaks the core mechanic.
 	 */
-	private void submitBonePasses(RenderPassInfo<R> renderPassInfo, GeoBone bone, SubmitNodeCollector renderTasks) {
-		R renderState = renderPassInfo.renderState();
+	private void submitBonePasses(RenderPassInfo<LivingEntityRenderState> renderPassInfo, GeoBone bone,
+			SubmitNodeCollector renderTasks) {
+		LivingEntityRenderState renderState = renderPassInfo.renderState();
 		Identifier texture = getTextureResource(renderState);
 		// GeckoLib 5 takes colours as one packed ARGB int - the form VertexConsumer.setColor(int) consumes.
 		// Alpha forced opaque: a straight multiply over the base pass. White if the ticket were somehow
@@ -173,18 +185,21 @@ public class OreTintLayer<R extends LivingEntityRenderState & GeoRenderState> ex
 		int packedLight = renderPassInfo.packedLight();
 		int packedOverlay = renderPassInfo.packedOverlay();
 		CuboidGeoBone cuboidBone = (CuboidGeoBone) bone;
+		OrderedSubmitNodeCollector afterBody = renderTasks.order(EXTRA_PASS_SUBMIT_ORDER);
 
 		RenderType bodyType = getRenderer().getRenderType(renderState, texture);
 		if (bodyType != null) {
 			int tint = opaque(tintRgb);
-			renderTasks.submitCustomGeometry(renderPassInfo.poseStack(), bodyType,
+			afterBody.submitCustomGeometry(renderPassInfo.poseStack(), bodyType,
 					(pose, buffer) -> drawBoneCubes(cuboidBone, pose, buffer, packedLight, packedOverlay, tint));
 		}
 
 		if (!renderState.isInvisible) {
 			int glow = opaque(scaleRgb(tintRgb, GLOW_STRENGTH));
-			renderTasks.order(GLOW_SUBMIT_ORDER).submitCustomGeometry(renderPassInfo.poseStack(), RenderTypes.eyes(texture),
-					(pose, buffer) -> drawBoneCubes(cuboidBone, pose, buffer, LightTexture.FULL_BRIGHT, packedOverlay, glow));
+			// LightCoordsUtil.FULL_BRIGHT is 26.2's home for what LightTexture.FULL_BRIGHT used to be; the
+			// eyes pipeline ignores the lightmap anyway, this just keeps the intent legible.
+			afterBody.submitCustomGeometry(renderPassInfo.poseStack(), RenderTypes.eyes(texture),
+					(pose, buffer) -> drawBoneCubes(cuboidBone, pose, buffer, LightCoordsUtil.FULL_BRIGHT, packedOverlay, glow));
 		}
 	}
 
