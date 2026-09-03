@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.2.0+mc1.21.8
+
+A port of 1.2.0 to Minecraft 1.21.8 (Fabric Loader 0.19.5, Fabric API 0.136.1, GeckoLib 5.2.2,
+Java 21), built on top of the 1.21.5 port below. The mob is meant to behave exactly as it does on
+1.20.1. Everything the `## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections list
+still applies here unchanged - the GeckoLib 5 render-state rewrite of the tint layer and its per-bone
+tasks, the `minecraft:pickaxes` tag standing in for `PickaxeItem`, the baked spawn-egg texture,
+`hurtServer`, the diamond-ore harvest check, the `STEP_HEIGHT` attribute, the `ResourceLocation`-keyed
+flee modifier, vanilla's `EntityType.Builder`, `Item.Properties.setId`, `SpawnPlacements.register`
+through Fabric's access widener, and no `mclib` jar (GeckoLib 5.2.2 has no `META-INF/jars/` either) -
+and is not repeated. 1.21.6 through 1.21.8 turned out to change almost nothing this mod touches, so
+this is the shortest port section so far; it records the one real change and, because the headline
+feature of 1.21.6 was a rendering rework, what was checked to confirm the rendering code did *not*
+need to change.
+
+### Changed
+
+- **Saved-lizard data is written and read through `ValueOutput`/`ValueInput`.** 1.21.6 stopped handing
+  entities a raw `CompoundTag` in `addAdditionalSaveData`/`readAdditionalSaveData` and passes a typed
+  view over it instead. The view has the same getters 1.21.5's `CompoundTag` grew - `getString`
+  returning an `Optional` that is empty for a missing key or a wrong-typed one, `getBooleanOr` with a
+  default, `putString`/`putBoolean` - so the two method bodies are unchanged and only the parameter
+  types moved. Same keys (`OreVariant` by enum name, `Deepslate`), same semantics: a lizard saved
+  without a variant, or with a name this version doesn't know, keeps the default rather than being
+  re-rolled, and a load always returns it to dormancy. This was the only compile error in the port.
+
+### Checked and unchanged
+
+- **The emissive pass survives 1.21.6's render-pipeline rework as written.** 1.21.6 rebuilt vanilla
+  rendering on `RenderPipeline` objects, which was the one change that could have forced the third
+  pass to be re-implemented. It did not: `RenderType` is still the batching layer the buffer source
+  hands out `VertexConsumer`s for, and `RenderType.eyes(texture)` is still there - in the mapped jar
+  it is the memoised `RenderType` built over `RenderPipelines.EYES`, so it is the same vanilla
+  enderman/spider-eye pass the 1.20.1 and 1.21.5 code relied on, fullbright and additive with the
+  depth write off. `LightTexture.FULL_BRIGHT`, `MultiBufferSource.getBuffer` and the `PoseStack`
+  surface `OreTintLayer` copies bone matrices through are likewise untouched, and 1.21.8 still draws
+  entities through the direct `EntityRenderer.render(state, poseStack, bufferSource, light)` call
+  rather than the submit/collector model 1.21.9 introduces. The three-pass structure and the rule that
+  the single `eyes` buffer swap happens only in the layer's `render`, after every per-bone task, are
+  therefore the 1.21.5 code verbatim.
+- **GeckoLib 5.2.2 behaves as 5.1.0 did everywhere this mod depends on it.** Compiling clean is a
+  weak check for a render layer whose correctness rests on *when* GeckoLib calls each hook, so the
+  invocation sequences of `defaultRender`, `preApplyRenderLayers`, `actuallyRender`,
+  `applyRenderLayers`, `renderRecursively` and `PerBoneRender.runTask` were diffed between the 5.1.0
+  and 5.2.2 jars and are identical. In particular: the layer hooks still all run for an entity that is
+  invisible to the viewer while the bone recursion (the only place a per-bone task's pose is captured)
+  is skipped, so the 1.21.5 guard that registers no tint task when no render type and buffer were
+  resolved is still both necessary and sufficient; per-bone tasks still run before any layer's
+  `render`, so the deferred emissive draw still sees both bones' captured matrices; and
+  `AutoGlowingGeoLayer` is still a whole-model re-render through a GeckoLib-private pipeline with a
+  `_glowmask` texture, so the reasons for not using it stand.
+
+### Not verified
+
+- **Rendering, in exactly the same terms as the 1.21.5 section lists** - it is the same layer code,
+  compiled against 1.21.8 and GeckoLib 5.2.2 and smoke-tested on a headless dedicated server only
+  (initialises, reaches `Done`, `/summon orelizards:ore_lizard` succeeds, stops cleanly, no
+  `orelizards` or `geckolib` stack trace; GeckoLib's harmless `EntityRendererMixin` target WARN on a
+  server is still present in 5.2.2). One item is new to this version: whether Iris and OptiFine builds
+  for 1.21.6+ still route the `RenderPipelines.EYES`-backed render type to `gbuffers_spidereyes`.
+  They keyed that mapping on the render type before the pipeline rework and are expected to key it on
+  the pipeline after, but it could only be confirmed with a shader pack loaded in a client.
+
 ## 1.2.0+mc1.21.5
 
 A port of 1.2.0 to Minecraft 1.21.5 (Fabric Loader 0.19.5, Fabric API 0.128.2, GeckoLib 5.1.0,

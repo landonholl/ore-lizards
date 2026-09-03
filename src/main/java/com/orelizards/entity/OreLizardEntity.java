@@ -5,7 +5,6 @@ import com.orelizards.entity.ai.FleeAndBurrowGoal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -40,6 +39,8 @@ import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
@@ -279,7 +280,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	@Override
-	public void addAdditionalSaveData(CompoundTag tag) {
+	public void addAdditionalSaveData(ValueOutput tag) {
 		super.addAdditionalSaveData(tag);
 		tag.putString(TAG_ORE_VARIANT, this.getOreVariant().name());
 		tag.putBoolean(TAG_DEEPSLATE, this.isDeepslate());
@@ -300,13 +301,14 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 * ore of an already-discovered lizard, which is worse than one legacy lizard reading as coal.
 	 */
 	@Override
-	public void readAdditionalSaveData(CompoundTag tag) {
+	public void readAdditionalSaveData(ValueInput tag) {
 		super.readAdditionalSaveData(tag);
-		// 1.21.5's CompoundTag getters hand back Optionals - empty when the key is missing or holds a
-		// different tag type - in place of a default value plus a separate typed contains() check. The
-		// two "keep the default" cases, no variant recorded and a name this version doesn't know, both
-		// fall out of the empty Optional: byName returns null for an unknown name and map() turns that
-		// into empty, so setOreVariant is only ever called with a real variant.
+		// 1.21.6 hands entity save data through ValueInput/ValueOutput rather than a raw CompoundTag; the
+		// getters keep 1.21.5's Optional shape - getString is empty when the key is missing or holds a
+		// different type, getBooleanOr takes the default - in place of a default value plus a separate
+		// typed contains() check. The two "keep the default" cases, no variant recorded and a name this
+		// version doesn't know, both fall out of the empty Optional: byName returns null for an unknown
+		// name and map() turns that into empty, so setOreVariant is only ever called with a real variant.
 		tag.getString(TAG_ORE_VARIANT).map(OreVariant::byName).ifPresent(this::setOreVariant);
 		this.setDeepslate(tag.getBooleanOr(TAG_DEEPSLATE, false));
 		this.becomeDormant();

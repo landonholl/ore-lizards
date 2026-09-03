@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.21.5 (Java 21, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.21.8 (Java 21, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 5.1.0 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 5.2.2 drives its model/animations.
 
-This branch (`1.21.5`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.4` port
-branch (itself on top of `1.21.1`); behaviour is meant to be identical, and the `## 1.2.0+mc1.21.5`,
-`## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections of [CHANGELOG.md](CHANGELOG.md) together list
-every place the port had to differ and why. When in doubt about *what the mob should do*, `main` is
-the source of truth.
+This branch (`1.21.8`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.5` port
+branch (itself on top of `1.21.4`, on top of `1.21.1`); behaviour is meant to be identical, and the
+`## 1.2.0+mc1.21.8`, `## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections of
+[CHANGELOG.md](CHANGELOG.md) together list every place the port had to differ and why. When in doubt
+about *what the mob should do*, `main` is the source of truth.
 
 ## Commands
 
@@ -132,6 +132,11 @@ enderman/spider eye overlay type — coincidental name clash with our own `eyes`
 Iris/OptiFine so shader packs treat it as emissive. Deliberately *not* GeckoLib's
 `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask` texture and a custom render type that
 shader packs have no convention for. The pass is skipped for invisible (dormant) lizards.
+1.21.6 rebuilt vanilla rendering on `RenderPipeline`s, but `RenderType` is still the batching layer
+and `RenderType.eyes(texture)` is still there — it is now the memoised `RenderType` over
+`RenderPipelines.EYES` — so nothing about this pass changed. If a future version drops the
+`RenderType.eyes` factory, the equivalent is a `RenderType` built on `RenderPipelines.EYES`; keep the
+shader-pack rationale, don't fall back to the GeckoLib layer.
 
 **Never request a *different* render type's buffer while the model's batch is still being written.**
 Only a fixed set of render types get their own buffer in `RenderBuffers`; everything else shares one,
@@ -205,13 +210,13 @@ API dependency thinking the mod only uses it for biome spawns.
 
 - There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
   because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
-  GeckoLib 5.1.0 for 1.21.5 (like 4.8.5 for 1.21.4 and 4.9.2 for 1.21.1) has no `META-INF/jars/` at
-  all and no mclib references, so the workaround was dropped along with its `implementation files(...)`
-  line.
-- GeckoLib 5.1.0 logs one `@Mixin target net.minecraft.client.renderer.entity.EntityRenderer was not
-  found` WARN on a dedicated server (its `EntityRendererMixin` is listed under `mixins`, not `client`).
-  Harmless and not ours; don't chase it. If a
-  future GeckoLib bump brings a nested jar back, `runClient`/`runServer` will fail with
+  GeckoLib 5.2.2 for 1.21.8 (like 5.1.0 for 1.21.5, 4.8.5 for 1.21.4 and 4.9.2 for 1.21.1) has no
+  `META-INF/jars/` at all and no mclib references, so the workaround was dropped along with its
+  `implementation files(...)` line.
+- GeckoLib 5.x (5.1.0 and 5.2.2 alike) logs one `@Mixin target
+  net.minecraft.client.renderer.entity.EntityRenderer was not found` WARN on a dedicated server (its
+  `EntityRendererMixin` is listed under `mixins`, not `client`). Harmless and not ours; don't chase it.
+  If a future GeckoLib bump brings a nested jar back, `runClient`/`runServer` will fail with
   `NoClassDefFoundError` and the fix is the same extract-and-reference dance described on `main`.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
@@ -221,10 +226,32 @@ API dependency thinking the mod only uses it for biome spawns.
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
 
-## 1.21.5-specific API notes
+## 1.21.8-specific API notes
 
-Things that bit during the port (1.21.1 first, then 1.21.4, then 1.21.5 on top) and will bite again
-on any further bump. The 1.21.5 / GeckoLib 5 additions first:
+Things that bit during the port (1.21.1 first, then 1.21.4, 1.21.5 and 1.21.8 on top) and will bite
+again on any further bump. The 1.21.8 additions first — there are few, because 1.21.6–1.21.8 changed
+almost nothing this mod touches:
+
+- **Entity save data is `ValueOutput`/`ValueInput`, not `CompoundTag`.** `addAdditionalSaveData(ValueOutput)`
+  and `readAdditionalSaveData(ValueInput)` since 1.21.6. The getters keep 1.21.5's shapes —
+  `getString(key)` returns an `Optional`, `getBooleanOr(key, default)`, `putString`/`putBoolean` — so
+  the body of both methods is unchanged; only the parameter types moved. This was the *only* compile
+  error in the whole port.
+- **1.21.6's `RenderPipeline` rework did not remove anything used here.** `RenderType.eyes`,
+  `LightTexture.FULL_BRIGHT`, `MultiBufferSource.getBuffer`, `PoseStack`/`PoseStack.Pose` (`pose()`,
+  `normal()`; `Pose.set` still package-private) are all as on 1.21.5. Entity rendering is still the
+  direct `EntityRenderer.render(state, poseStack, bufferSource, light)` model on 1.21.8 — the
+  submit/collector rework lands in 1.21.9, and *that* is where `OreTintLayer` will need real work.
+- **GeckoLib 5.2.2 is a drop-in for 5.1.0 as far as this mod goes.** Every hook signature the client
+  code uses (`GeoRenderLayer.addRenderData/preRender/addPerBoneRender/render`, `PerBoneRender.render`,
+  `GeoRenderer.renderCubesOfBone`, `GeoModel`'s state-taking getters, `DataTicket.create`,
+  `AnimationController(String, int, handler)`, `AnimationTest`) is identical, and so — checked by
+  diffing the bytecode of `defaultRender`/`preApplyRenderLayers`/`actuallyRender`/`applyRenderLayers`/
+  `renderRecursively`/`PerBoneRender.runTask` between the two jars — is the render-path mechanics the
+  layer's ordering and null-pose guard depend on. GeckoLib 5.2.2 declares `minecraft >=1.21.8`; the
+  mod pins `1.21.8` exactly because that is the only game version the build is published for.
+
+Carried over from the 1.21.5 port (GeckoLib 4 → 5):
 
 - **GeckoLib 5 is a different renderer API.** `GeoModel.getModelResource`/`getTextureResource` take a
   `GeoRenderState` (only `getAnimationResource` still takes the entity). `GeoRenderLayer<T, O, R>`'s
@@ -252,9 +279,9 @@ on any further bump. The 1.21.5 / GeckoLib 5 additions first:
   `OreTintLayer` does.
 - **`PickaxeItem` is gone** (every `DiggerItem` subclass is): a pickaxe is `stack.is(ItemTags.PICKAXES)`.
 - **`CompoundTag.getString`/`getBoolean` return `Optional`s**, `getStringOr`/`getBooleanOr` take a
-  default, and `contains(key, type)` is gone (plain `contains(key)` remains).
-  `readAdditionalSaveData`/`addAdditionalSaveData` still take a `CompoundTag` on 1.21.5 (1.21.6 moves
-  them to `ValueInput`/`ValueOutput`).
+  default, and `contains(key, type)` is gone (plain `contains(key)` remains). `ValueInput`/`ValueOutput`
+  (see the 1.21.8 notes above) expose the same getter shapes, which is why the save/load bodies
+  survived the parameter-type change untouched.
 - **No spawn egg tint layers.** `template_spawn_egg`, `spawn_egg.png` and `spawn_egg_overlay.png` no
   longer exist in the client jar; see *Variants and rendering* for how ours is produced.
 
