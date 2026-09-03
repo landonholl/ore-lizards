@@ -1,9 +1,10 @@
 package com.orelizards.entity;
 
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.Random;
 
 /**
  * <p>Tint colors are measured, not eyeballed: each one is the mean of every pixel in that mineral's
@@ -62,7 +63,7 @@ public enum OreVariant {
 			this.jackpotChancePercent = jackpotChancePercent;
 		}
 
-		private int rollCount(RandomSource random) {
+		private int rollCount(Random random) {
 			if (this.jackpotChancePercent > 0 && random.nextInt(100) < this.jackpotChancePercent) {
 				return JACKPOT_COUNT;
 			}
@@ -96,7 +97,7 @@ public enum OreVariant {
 	 * How many items this variant drops on death. Bulk ores roll 4-6; the precious ones roll 2-4,
 	 * with a 2% chance of paying out 6 instead.
 	 */
-	public int rollDropCount(RandomSource random) {
+	public int rollDropCount(Random random) {
 		return this.dropTier.rollCount(random);
 	}
 
@@ -118,7 +119,7 @@ public enum OreVariant {
 	/**
 	 * Uniform across every variant - used when the lizard spawned on regular stone.
 	 */
-	public static OreVariant random(RandomSource random) {
+	public static OreVariant random(Random random) {
 		OreVariant[] values = values();
 		return values[random.nextInt(values.length)];
 	}
@@ -127,7 +128,7 @@ public enum OreVariant {
 	 * Weighted towards diamond/emerald and excludes coal entirely - used when the lizard
 	 * spawned on deepslate.
 	 */
-	public static OreVariant randomDeepslate(RandomSource random) {
+	public static OreVariant randomDeepslate(Random random) {
 		int totalWeight = 0;
 		for (OreVariant variant : values()) {
 			totalWeight += variant.deepslateWeight;

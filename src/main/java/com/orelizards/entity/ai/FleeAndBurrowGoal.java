@@ -128,7 +128,7 @@ public class FleeAndBurrowGoal extends Goal {
 	@SuppressWarnings("deprecation")
 	@Nullable
 	private BlockPos findFurthestEscape(LivingEntity target) {
-		Level level = this.lizard.level();
+		Level level = this.lizard.level;
 		BlockPos origin = this.lizard.blockPosition();
 
 		BlockPos best = null;

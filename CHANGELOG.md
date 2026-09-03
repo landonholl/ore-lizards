@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.2.0+mc1.18.2
+
+A port of 1.2.0 to Minecraft 1.18.2. The mob is meant to behave exactly as it does on 1.20.1; this
+section lists only what had to be done differently and why. The big one is the animation library:
+1.18.2 is served by GeckoLib **3.0.80**, an earlier API generation than the 4.8.4 the 1.20.1 build is
+written against, so everything that touches GeckoLib was re-implemented rather than translated.
+
+### Changed
+
+- **Holding the burrow pose is done with GeckoLib's bone reset speed, not a loop type.** GeckoLib
+  3.0.80 declares `HOLD_ON_LAST_FRAME` but never implements it: the enum constant is built with the
+  same `looping=false` flag as `PLAY_ONCE`, and neither `AnimationController` nor `AnimationProcessor`
+  ever tests for it, so at the end of the 20-tick `burrow` clip the controller still stops and the
+  processor starts easing every bone back to its rest pose - over `AnimationData.resetTickLength`,
+  which defaults to a single tick. That is the 1.1.0 "lizard pops back above ground" bug all over
+  again. The port therefore leaves the loop type on the animations for intent and, while the lizard
+  is DIGGING_DOWN, sets the reset speed to 1200 ticks: the easing still begins the moment the clip
+  ends, but at 1/1200th of the way per tick the body has moved well under a percent of its two
+  blocks by the time the state discards the entity ten ticks later. Every other state puts the
+  default of 1 tick back before anything of its own can stop, and nothing follows DIGGING_DOWN, so
+  the slow reset cannot leak into the walk cycle. The `AnimationData` that owns the setting is the
+  one handed to `registerControllers`, which is captured into the predicate for the purpose.
+- **The tint and glow passes re-render the model with every other bone's cubes hidden.** A GeckoLib
+  3 layer has no per-bone hook; its single `render` runs after the body has been written and can
+  only draw the whole model again. So instead of capturing bone matrices during the body pass, the
+  layer hides the *cubes* of every bone that isn't `shards` or `eyes` and renders the model twice
+  more through `IGeoRenderer.render`: once with the variant tint through the body's own render type,
+  once fullbright through `RenderType.eyes` at 0.7x the tint. Cubes rather than bones, because
+  GeckoLib 3's `renderRecursively` skips a hidden bone's children too and both glowing bones sit
+  under bones that must be skipped. GeckoLib 3 also runs its layers inside the entity's own model
+  transform, so no matrix bookkeeping is needed for the bones to land where the body pass put them.
+  The rule about only requesting a different render type's buffer after the body pass is done still
+  holds and is still why this lives in a layer rather than a `renderRecursively` override.
+- **The layer now checks `isInvisible()` itself, for both passes.** GeckoLib 4 skips the whole
+  render for an invisible entity, so on 1.20.1 the check was belt-and-braces. GeckoLib 3 instead
+  draws the body at alpha 0 (the cutout shader discards it) and then runs every layer regardless.
+  Both of the layer's passes draw at full alpha, so without the check a dormant lizard would show as
+  a floating, glowing set of shards - the one failure that breaks the mob outright.
+- **Spawn placement is declared on Fabric's entity type builder, not in `onInitialize`.**
+  `SpawnPlacements.register` is private in 1.18.2 (Mojang only opened it in 1.19), so the rule -
+  `ON_GROUND`, `MOTION_BLOCKING`, `OreLizardEntity::canSpawn`, unchanged - moved to
+  `FabricEntityTypeBuilder.createMob().spawnRestriction(...)` in `ModEntities`, which reaches the
+  method through Fabric's accessor.
+- **The spawn egg sits in the Miscellaneous creative tab.** 1.18.2 has neither a Spawn Eggs tab nor
+  the `ItemGroupEvents` API; vanilla's own eggs live in Miscellaneous, and an item names its tab on
+  its `Item.Properties`.
+- **`fabric.mod.json` depends on `geckolib3`, not `geckolib`.** GeckoLib 3.x registers under the mod
+  id `geckolib3`; declaring `geckolib` would make Fabric Loader refuse to start. `minecraft` is
+  pinned to `1.18.2`, the only version GeckoLib 3.0.80 declares for itself.
+
+### Build
+
+- **GeckoLib 3.0.x cannot be remapped to Mojang mappings as shipped, so `build.gradle` patches one
+  method out of it first.** `GeoProjectilesRenderer` declares both its own
+  `IGeoRenderer.getTextureLocation(Entity)` and an override of `EntityRenderer.getTextureLocation`
+  (intermediary `method_3931`). Yarn keeps those apart; Mojmap gives both the same name and
+  descriptor, which Tiny Remapper reports as an unfixable conflict and Loom aborts on ("Failed to
+  remap 48 mods"). Loom exposes no ignore-conflicts switch for dependency remapping, and its
+  `RemapperExtension` API loads extension classes through Loom's own classloader, where a class
+  defined in the build script is not visible. The override is a one-line delegate to the other
+  method, so `build.gradle` rewrites the Modrinth artifact with that single method removed, at
+  configuration time (Loom remaps mod dependencies while the project is configured), and points
+  `modImplementation` at the result under `.gradle/geckolib-mojmap/`. Once remapped the surviving
+  method *is* the override, so the class is unchanged in behaviour. The artifact is fetched by hand
+  (Gradle's module cache first, then the Modrinth maven) because resolving a configuration that
+  early freezes every repository descriptor and Loom then fails setting up its own. GeckoLib 3.1+
+  renamed the method to `getTextureResource`, so only 3.0.x needs this.
+- **`libs/mclib-20.jar` and its dependency line are gone.** GeckoLib 3.0.80 shades mclib into
+  `software.bernie.shadowed.eliotlash.mclib` and nothing in it references the copy it also nests as
+  `META-INF/jars/mclib-20.jar`, so the Loom jar-in-jar workaround the 1.20.1 build needs has nothing
+  to work around here.
+
+### Not verified
+
+- Everything client-side was checked against GeckoLib's bytecode and bundled `core` sources, not in
+  a running client: the tint and emissive passes, the zero-tick transition (GeckoLib 3's
+  `MathUtil.lerpValues` returns the end value outright when the transition length is 0, so the first
+  frame shown is the clip's own first frame), and the reset-speed hold. The headless dedicated
+  server run covers registration, spawning, the state machine and drops only.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it

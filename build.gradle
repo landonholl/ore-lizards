@@ -35,6 +35,98 @@ loom {
 	}
 }
 
+// GeckoLib 3.0.x cannot be remapped to Mojang mappings as shipped. GeoProjectilesRenderer declares
+// both its own IGeoRenderer.getTextureLocation(Entity) and an override of
+// EntityRenderer.getTextureLocation(Entity) (intermediary method_3931). Under Yarn those are two
+// differently named methods; under Mojmap both want the name getTextureLocation with the same
+// descriptor, which Tiny Remapper reports as an unfixable name conflict and Loom's dependency remap
+// aborts on ("Failed to remap 48 mods"). Loom exposes no ignoreConflicts switch for dependency
+// remapping, and the override is a one-line delegate to the other method - so this rewrites the
+// Modrinth artifact with that single method removed. Once remapped, the surviving method *is* the
+// override, and nothing else in the jar changes. It has to happen here, at configuration time,
+// because Loom remaps mod dependencies while the project is being configured, so the patched file
+// must already exist. GeckoLib 3.1+ renamed its method to getTextureResource, so only 3.0.x needs
+// this. The upstream coordinate is still what gradle.properties declares - this only changes how
+// the dev classpath copy is prepared, not what players install.
+//
+// The artifact is fetched by hand rather than through a Gradle configuration: resolving anything
+// this early freezes every repository's descriptor, and Loom then fails with "Cannot mutate content
+// repository descriptor 'LoomLocalRemappedMods' after repository has been used" when it tries to
+// finish setting up its own. Gradle's module cache is checked first, then the Modrinth maven.
+// Everything lands in .gradle/geckolib-mojmap/ (ignored by git); delete that directory to redo the
+// patch, and bump the revision suffix if the patch itself changes.
+class DropMethodVisitor extends org.objectweb.asm.ClassVisitor {
+	private final String methodName
+	private final String methodDescriptor
+
+	DropMethodVisitor(org.objectweb.asm.ClassVisitor next, String methodName, String methodDescriptor) {
+		super(org.objectweb.asm.Opcodes.ASM9, next)
+		this.methodName = methodName
+		this.methodDescriptor = methodDescriptor
+	}
+
+	@Override
+	org.objectweb.asm.MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+		if (name == methodName && descriptor == methodDescriptor) {
+			return null
+		}
+		return super.visitMethod(access, name, descriptor, signature, exceptions)
+	}
+}
+
+def geckolibMojmapJar = { ->
+	String[] coordinate = project.geckolib_version.split(':')
+	String group = coordinate[0]
+	String name = coordinate[1]
+	String version = coordinate[2]
+	File cacheDir = new File(project.projectDir, '.gradle/geckolib-mojmap')
+	File raw = new File(cacheDir, "${name}-${version}.jar")
+	File out = new File(cacheDir, "${name}-${version}-mojmap-r1.jar")
+	if (out.isFile() && out.length() > 0) {
+		return out
+	}
+	cacheDir.mkdirs()
+	if (!raw.isFile() || raw.length() == 0) {
+		File moduleCacheDir = new File(project.gradle.gradleUserHomeDir, "caches/modules-2/files-2.1/${group}/${name}/${version}")
+		File cached = moduleCacheDir.isDirectory()
+				? moduleCacheDir.listFiles().collect { new File(it, raw.name) }.find { it.isFile() && it.length() > 0 }
+				: null
+		if (cached != null) {
+			java.nio.file.Files.copy(cached.toPath(), raw.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+		} else {
+			String url = "https://api.modrinth.com/maven/${group.replace('.', '/')}/${name}/${version}/${raw.name}"
+			logger.lifecycle("Ore Lizards: downloading ${url}")
+			raw.bytes = new URI(url).toURL().bytes
+		}
+	}
+	String conflictingClass = 'software/bernie/geckolib3/renderers/geo/GeoProjectilesRenderer.class'
+	String conflictingMethod = 'method_3931'
+	String conflictingDescriptor = '(Lnet/minecraft/class_1297;)Lnet/minecraft/class_2960;'
+	File tmp = new File(out.parentFile, out.name + '.tmp')
+	new java.util.zip.ZipFile(raw).withCloseable { zip ->
+		new java.util.zip.ZipOutputStream(new FileOutputStream(tmp)).withCloseable { zos ->
+			for (java.util.zip.ZipEntry entry : zip.entries()) {
+				// A modified class would fail any jar signature check, so signature files can't be kept.
+				if (entry.name ==~ /META-INF\/[^\/]+\.(SF|RSA|DSA|EC)/) {
+					continue
+				}
+				byte[] data = zip.getInputStream(entry).bytes
+				if (entry.name == conflictingClass) {
+					def reader = new org.objectweb.asm.ClassReader(data)
+					def writer = new org.objectweb.asm.ClassWriter(reader, 0)
+					reader.accept(new DropMethodVisitor(writer, conflictingMethod, conflictingDescriptor), 0)
+					data = writer.toByteArray()
+				}
+				zos.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+				zos.write(data)
+				zos.closeEntry()
+			}
+		}
+	}
+	java.nio.file.Files.move(tmp.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+	return out
+}
+
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
@@ -44,14 +136,13 @@ dependencies {
 	// Fabric API
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	// GeckoLib - animation library for the buried/erupt/flee/dig-down state machine
-	modImplementation "${project.geckolib_version}"
+	// GeckoLib - animation library for the buried/erupt/flee/dig-down state machine. Resolved from
+	// the coordinate in gradle.properties, then patched for Mojang mappings - see geckolibMojmapJar.
+	modImplementation files(geckolibMojmapJar())
 
-	// GeckoLib bundles this as a jar-in-jar (see its fabric.mod.json "jars" entry), but the
-	// current Loom 1.17 dev-launch classpath isn't picking that nested jar up, causing
-	// software.bernie.geckolib.util.JsonUtil to fail NoClassDefFoundError at runClient startup.
-	// Extracted straight out of the GeckoLib jar (META-INF/jars/mclib-20.jar) as a workaround.
-	implementation files('libs/mclib-20.jar')
+	// GeckoLib 3.0.80 shades mclib into software.bernie.shadowed.eliotlash.mclib and nothing in it
+	// references the copy it also nests as META-INF/jars/mclib-20.jar, so the libs/mclib-20.jar
+	// workaround the 1.20.1 build needs does not apply here.
 }
 
 processResources {

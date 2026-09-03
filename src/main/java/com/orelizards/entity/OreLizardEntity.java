@@ -13,7 +13,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.BlockTags;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
@@ -41,17 +40,20 @@ import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
-import software.bernie.geckolib.animatable.GeoEntity;
-import software.bernie.geckolib.core.animatable.instance.AnimatableInstanceCache;
-import software.bernie.geckolib.core.animation.AnimatableManager;
-import software.bernie.geckolib.core.animation.AnimationController;
-import software.bernie.geckolib.core.animation.RawAnimation;
-import software.bernie.geckolib.core.object.PlayState;
-import software.bernie.geckolib.util.GeckoLibUtil;
+import software.bernie.geckolib3.core.IAnimatable;
+import software.bernie.geckolib3.core.PlayState;
+import software.bernie.geckolib3.core.builder.AnimationBuilder;
+import software.bernie.geckolib3.core.builder.ILoopType.EDefaultLoopTypes;
+import software.bernie.geckolib3.core.controller.AnimationController;
+import software.bernie.geckolib3.core.event.predicate.AnimationEvent;
+import software.bernie.geckolib3.core.manager.AnimationData;
+import software.bernie.geckolib3.core.manager.AnimationFactory;
+import software.bernie.geckolib3.util.GeckoLibUtil;
 
+import java.util.Random;
 import java.util.UUID;
 
-public class OreLizardEntity extends PathfinderMob implements GeoEntity {
+public class OreLizardEntity extends PathfinderMob implements IAnimatable {
 	public enum State {
 		BURIED,
 		ERUPTING,
@@ -84,26 +86,43 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
-	private static final RawAnimation SCUTTLE_ANIM = RawAnimation.begin().thenLoop("scuttle");
-	// thenPlayAndHold, not thenPlay: a PLAY_ONCE animation stops its controller on completion,
-	// which drops the model back to its bind pose. Burrow's last frame leaves the body 32 units
-	// (two blocks) underground, so reverting would pop the lizard back up above ground, in full
-	// view, for the tail end of DIGGING_DOWN. Holding the final frame keeps it buried until the
-	// entity is discarded. Appear ends at the rest pose so it's unaffected either way, but the
-	// same treatment removes any chance of a one-tick flicker between it finishing and FLEEING.
-	private static final RawAnimation BURROW_ANIM = RawAnimation.begin().thenPlayAndHold("burrow");
-	private static final RawAnimation APPEAR_ANIM = RawAnimation.begin().thenPlayAndHold("appear");
+	private static final AnimationBuilder SCUTTLE_ANIM = new AnimationBuilder().addAnimation("scuttle", EDefaultLoopTypes.LOOP);
+	// Play once and stay on the final frame. A one-shot that runs out stops its controller, which
+	// drops the model back to its bind pose. Burrow's last frame leaves the body 32 units (two
+	// blocks) underground, so reverting would pop the lizard back up above ground, in full view,
+	// for the tail end of DIGGING_DOWN. Appear ends at the rest pose so it's unaffected either way,
+	// but the same treatment removes any chance of a one-tick flicker between it finishing and
+	// FLEEING.
+	//
+	// GeckoLib 3.0.80 declares HOLD_ON_LAST_FRAME but does not implement it: it is constructed with
+	// the same looping=false flag as PLAY_ONCE and nothing in AnimationController or
+	// AnimationProcessor ever tests for it, so at the end of the clip the controller still goes to
+	// Stopped and the processor starts easing every bone back towards its rest pose. The loop type
+	// is kept for intent; the actual hold is done with the reset speed - see animate().
+	private static final AnimationBuilder BURROW_ANIM = new AnimationBuilder().addAnimation("burrow", EDefaultLoopTypes.HOLD_ON_LAST_FRAME);
+	private static final AnimationBuilder APPEAR_ANIM = new AnimationBuilder().addAnimation("appear", EDefaultLoopTypes.HOLD_ON_LAST_FRAME);
 
 	// Blend time when switching animations. The walk cycle wants to ease in; the state animations
-	// must not - see registerControllers for why.
+	// must not - see animate() for why.
 	private static final int MOVEMENT_TRANSITION_TICKS = 5;
 	private static final int STATE_TRANSITION_TICKS = 0;
+
+	// How long GeckoLib 3 takes to ease bones back to the rest pose once no animation is driving
+	// them. 1 is GeckoLib's own default (AnimationData.resetTickLength) and stays in force in every
+	// state but one. While DIGGING_DOWN it is pushed out to the value below, which is what actually
+	// keeps the lizard underground after the 20-tick burrow clip ends: the processor still starts
+	// easing the bones back the moment the controller stops, but at 1/1200th of the way per tick
+	// the body has moved well under a percent of the two blocks by the time DIGGING_DOWN discards
+	// the entity ten ticks later. There is no state after DIGGING_DOWN for the slow reset to leak
+	// into, and every other state restores the default before anything of its own can stop.
+	private static final double DEFAULT_RESET_TICKS = 1.0;
+	private static final double HOLD_RESET_TICKS = 1200.0;
 
 	// Spawn band: high enough to reach the stone layer (deepslate takes over below Y=-8), but
 	// still required to sit well under the terrain surface so it stays a cave mob.
 	private static final int MAX_SPAWN_Y = 50;
 	private static final int MIN_DEPTH_BELOW_SURFACE = 8;
-	// 1.20.1 worldgen replaces stone with deepslate entirely below Y=-8, blending randomly from
+	// 1.18+ worldgen replaces stone with deepslate entirely below Y=-8, blending randomly from
 	// Y=0 down. -4 is the midpoint of that band, so it's the closest single threshold to what the
 	// surrounding rock actually looks like - and it's the rule that drives the distribution in the
 	// first place, so reading it directly beats sampling blocks at spawn time.
@@ -148,7 +167,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final double SPARK_Y_OFFSET = 0.35;
 	private static final double SPARK_SPREAD = 0.2;
 
-	private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
+	private final AnimationFactory factory = GeckoLibUtil.createFactory(this);
 
 	private int stateTimer;
 	@Nullable
@@ -161,7 +180,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		// rise in a cave floor became a jump - which kills the mob's momentum and made the flee
 		// speed boost read as much slower than it is. 1.0 is what vanilla gives horses and ravagers.
 		// The same value feeds WalkNodeEvaluator, so paths now route over those rises as steps too.
-		this.setMaxUpStep(1.0F);
+		this.maxUpStep = 1.0F;
 		this.goalSelector.addGoal(0, new FleeAndBurrowGoal(this));
 		this.goalSelector.addGoal(1, new FloatGoal(this));
 		// Look-flag goals, not move-flag - these run concurrently with fleeing rather than
@@ -181,11 +200,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, MobSpawnType spawnType,
-			BlockPos pos, RandomSource random) {
+			BlockPos pos, Random random) {
 		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
 		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
 		//
-		// The old "Y < 0" rule made stone lizards unreachable: 1.20.1 worldgen fully replaces
+		// The old "Y < 0" rule made stone lizards unreachable: 1.18+ worldgen fully replaces
 		// stone with deepslate below Y=-8 (blending from Y=0 down), so every natural spawn landed
 		// on deepslate. The ceiling now reaches up into the stone band instead. Depth-below-
 		// surface (rather than a light check) is what keeps it genuinely underground, since it
@@ -241,7 +260,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return;
 		}
 
-		Player player = this.level().getNearestPlayer(this, -1.0);
+		Player player = this.level.getNearestPlayer(this, -1.0);
 		// No players in this dimension at all: nobody to preserve it for, but nobody to notice it
 		// go either, and in practice its chunk isn't loaded to tick this. Leave it be.
 		if (player == null) {
@@ -250,7 +269,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (player.distanceToSqr(this) < DORMANT_DESPAWN_RADIUS_SQ) {
 			return;
 		}
-		if (isUnderground(this.level(), player.blockPosition())) {
+		if (isUnderground(this.level, player.blockPosition())) {
 			return;
 		}
 
@@ -345,7 +364,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	@Override
 	public void tick() {
 		super.tick();
-		if (this.level().isClientSide) {
+		if (this.level.isClientSide) {
 			return;
 		}
 		this.emitSparkTrail();
@@ -369,7 +388,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (this.getLizardState() == State.BURIED || this.tickCount % SPARK_INTERVAL_TICKS != 0) {
 			return;
 		}
-		if (!(this.level() instanceof ServerLevel serverLevel)) {
+		if (!(this.level instanceof ServerLevel serverLevel)) {
 			return;
 		}
 		// Zero speed: the sparks are left hanging where the lizard was rather than being thrown, so
@@ -382,7 +401,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		// Uses vanilla's own named predicate rather than the boolean overload - that boolean's
 		// polarity is the opposite of what it reads like (false = NO_SPECTATORS, which still
 		// detects creative players), which previously let creative players wake dormant lizards.
-		Player nearest = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
+		Player nearest = this.level.getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
 				EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		if (nearest != null) {
 			this.beginErupting(nearest);
@@ -485,15 +504,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 * lizard gets.
 	 */
 	private boolean isValidFleeTarget(@Nullable LivingEntity target) {
-		return target != null && target.isAlive() && target.level() == this.level();
+		return target != null && target.isAlive() && target.level == this.level;
 	}
 
 	private void spawnBurstParticles() {
 		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_BREAK : SoundEvents.STONE_BREAK, 1.0F, 1.0F);
-		if (!(this.level() instanceof ServerLevel serverLevel)) {
+		if (!(this.level instanceof ServerLevel serverLevel)) {
 			return;
 		}
-		BlockState blockState = this.level().getBlockState(this.blockPosition().below());
+		BlockState blockState = this.level.getBlockState(this.blockPosition().below());
 		serverLevel.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, blockState),
 				this.getX(), this.getY() + 0.5, this.getZ(), 20, 0.3, 0.3, 0.3, 0.05);
 	}
@@ -592,7 +611,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (threat == null) {
 			// Environmental damage - lava, a falling block, a hit from something with no owner.
 			// There is usually still a player behind it, so run from the nearest one if there is any.
-			threat = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(),
+			threat = this.level.getNearestPlayer(this.getX(), this.getY(), this.getZ(),
 					PANIC_TARGET_SEARCH_RANGE, EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		}
 		if (!this.isValidFleeTarget(threat)) {
@@ -628,47 +647,59 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	@Override
-	public AnimatableInstanceCache getAnimatableInstanceCache() {
-		return this.cache;
+	public AnimationFactory getFactory() {
+		return this.factory;
 	}
 
 	@Override
-	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
-		controllers.add(new AnimationController<>(this, "movement", MOVEMENT_TRANSITION_TICKS, state -> {
-			AnimationController<OreLizardEntity> controller = state.getController();
-			// State checks take priority over the generic movement check below, so burrow/appear
-			// can't get interrupted by some incidental movement source during those windows.
-			State lizardState = state.getAnimatable().getLizardState();
+	public void registerControllers(AnimationData data) {
+		// The AnimationData is this entity's own (the factory creates one per entity id and calls
+		// this exactly once for it), so it is captured here and handed to the predicate: it owns the
+		// bone reset speed, which animate() uses to hold the burrow pose - see HOLD_RESET_TICKS.
+		data.addAnimationController(new AnimationController<>(this, "movement", MOVEMENT_TRANSITION_TICKS,
+				event -> this.animate(event, data)));
+	}
 
-			// Both state animations start with a zero-tick transition. GeckoLib otherwise spends
-			// transitionLength ticks blending from whatever pose the model is currently in into
-			// the new animation's first frame, and only starts the animation's own clock once
-			// that blend finishes. For "appear" that was ruinous: its first frame puts the body
-			// 13 units (0.81 blocks) underground, but the pose it blends from is the rest pose at
-			// ground level - so the lizard became visible standing on top of the block, slid down
-			// into it over a quarter second, and only then began erupting. "burrow" starts from
-			// the rest pose so it never sank, but it still stood there motionless for those five
-			// ticks before digging. Starting on frame one also makes the animation lengths line
-			// up with the state timers: appear is exactly 1 second, as is ERUPT_DURATION_TICKS,
-			// where previously the transition ate a quarter of the eruption.
-			if (lizardState == State.DIGGING_DOWN) {
-				controller.transitionLength(STATE_TRANSITION_TICKS);
-				return state.setAndContinue(BURROW_ANIM);
-			}
-			if (lizardState == State.ERUPTING) {
-				controller.transitionLength(STATE_TRANSITION_TICKS);
-				return state.setAndContinue(APPEAR_ANIM);
-			}
+	private PlayState animate(AnimationEvent<OreLizardEntity> event, AnimationData data) {
+		AnimationController<OreLizardEntity> controller = event.getController();
+		// State checks take priority over the generic movement check below, so burrow/appear
+		// can't get interrupted by some incidental movement source during those windows.
+		State lizardState = this.getLizardState();
 
-			controller.transitionLength(MOVEMENT_TRANSITION_TICKS);
-			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
-			// mobs use for their walk cycle) rather than our own isFleeing() flag, so it scuttles
-			// whenever it's genuinely moving for any reason - fleeing, knockback, pushed by
-			// another entity, etc. - not only during the AI's own flee state.
-			if (state.isMoving()) {
-				return state.setAndContinue(SCUTTLE_ANIM);
-			}
-			return PlayState.STOP;
-		}));
+		// Both state animations start with a zero-tick transition. GeckoLib otherwise spends
+		// transitionLengthTicks blending from whatever pose the model is currently in into the
+		// new animation's first frame, and only starts the animation's own clock once that blend
+		// finishes. For "appear" that was ruinous: its first frame puts the body 13 units (0.81
+		// blocks) underground, but the pose it blends from is the rest pose at ground level - so
+		// the lizard became visible standing on top of the block, slid down into it over a
+		// quarter second, and only then began erupting. "burrow" starts from the rest pose so it
+		// never sank, but it still stood there motionless for those five ticks before digging.
+		// Starting on frame one also makes the animation lengths line up with the state timers:
+		// appear is exactly 1 second, as is ERUPT_DURATION_TICKS, where previously the transition
+		// ate a quarter of the eruption. (GeckoLib 3 exposes the blend length as a public field.)
+		if (lizardState == State.DIGGING_DOWN) {
+			controller.transitionLengthTicks = STATE_TRANSITION_TICKS;
+			// The hold. Set before the clip can end, and left in place until the entity is gone.
+			data.setResetSpeedInTicks(HOLD_RESET_TICKS);
+			controller.setAnimation(BURROW_ANIM);
+			return PlayState.CONTINUE;
+		}
+		data.setResetSpeedInTicks(DEFAULT_RESET_TICKS);
+		if (lizardState == State.ERUPTING) {
+			controller.transitionLengthTicks = STATE_TRANSITION_TICKS;
+			controller.setAnimation(APPEAR_ANIM);
+			return PlayState.CONTINUE;
+		}
+
+		controller.transitionLengthTicks = MOVEMENT_TRANSITION_TICKS;
+		// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
+		// mobs use for their walk cycle) rather than our own isFleeing() flag, so it scuttles
+		// whenever it's genuinely moving for any reason - fleeing, knockback, pushed by
+		// another entity, etc. - not only during the AI's own flee state.
+		if (event.isMoving()) {
+			controller.setAnimation(SCUTTLE_ANIM);
+			return PlayState.CONTINUE;
+		}
+		return PlayState.STOP;
 	}
 }
