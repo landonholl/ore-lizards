@@ -1,19 +1,19 @@
 package com.orelizards.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.orelizards.entity.OreLizardEntity;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
-import org.jetbrains.annotations.Nullable;
-import org.joml.Matrix3f;
-import org.joml.Matrix4f;
-import software.bernie.geckolib.cache.object.BakedGeoModel;
-import software.bernie.geckolib.cache.object.GeoBone;
-import software.bernie.geckolib.renderer.GeoRenderer;
-import software.bernie.geckolib.renderer.layer.GeoRenderLayer;
+import net.minecraft.client.renderer.entity.LivingEntityRenderer;
+import net.minecraft.resources.ResourceLocation;
+import software.bernie.geckolib3.geo.render.built.GeoBone;
+import software.bernie.geckolib3.geo.render.built.GeoModel;
+import software.bernie.geckolib3.renderers.geo.GeoLayerRenderer;
+import software.bernie.geckolib3.renderers.geo.IGeoRenderer;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -22,15 +22,20 @@ import java.util.List;
  *
  * <p>Both bones then get a further emissive pass, so they read as glowing crystal rather than
  * painted rock - the mob was very hard to pick out against cave stone otherwise.
+ *
+ * <p><b>How this works under GeckoLib 3.</b> A GeckoLib 3 layer has no per-bone hook: its only
+ * entry point is {@link #render}, which runs once, after the whole model has been written, and is
+ * expected to re-render the model itself. So both passes here re-run the renderer over the full
+ * bone tree with every bone except {@code shards} and {@code eyes} hidden for the duration (their
+ * ancestors stay un-hidden but with their own cubes suppressed, since hiding a bone in GeckoLib 3
+ * hides its whole subtree). That happens to land exactly where the render-type swap has to happen
+ * anyway - see {@link #render} for why.
  */
-public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
+public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 	private static final String SHARDS_BONE = "shards";
 	private static final String EYES_BONE = "eyes";
 
-	/**
-	 * Bones that get the variant tint and the emissive pass. Order is only used to give each bone
-	 * a stable slot in {@link #pending}.
-	 */
+	/** Bones that get the variant tint and the emissive pass. */
 	private static final List<String> GLOWING_BONES = List.of(SHARDS_BONE, EYES_BONE);
 
 	/**
@@ -42,73 +47,35 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 	 */
 	private static final float GLOW_STRENGTH = 0.7F;
 
-	/** A bone's transform for this frame, captured during the bone pass and consumed in render(). */
-	private static final class PendingGlow {
-		@Nullable
-		private GeoBone bone;
-		private final Matrix4f pose = new Matrix4f();
-		private final Matrix3f normal = new Matrix3f();
+	/** One bone's visibility flags as they were before a pass, so the pass can be undone exactly. */
+	private record BoneVisibility(GeoBone bone, boolean hidden, boolean cubesHidden, boolean childrenHidden) {
+		static BoneVisibility capture(GeoBone bone) {
+			return new BoneVisibility(bone, bone.isHidden, bone.areCubesHidden, bone.hideChildBonesToo);
+		}
+
+		void restore() {
+			this.bone.setHidden(this.hidden, this.childrenHidden);
+			this.bone.setCubesHidden(this.cubesHidden);
+		}
 	}
 
-	// Where each glowing bone ended up this frame - see renderEmissive for why the emissive draw
-	// can't happen inline. Mutable renderer state is safe here only because a renderer instance is
-	// driven by a single thread and both halves run within one entity's render call; render()
-	// always clears every slot, so a stale bone can never leak into the next entity. Slots are
-	// reused rather than reallocated each frame.
-	private final PendingGlow[] pending = GLOWING_BONES.stream().map(name -> new PendingGlow()).toArray(PendingGlow[]::new);
+	// The baked GeoModel - and so every GeoBone's hidden flag - is one cached object shared by every
+	// lizard on screen, so the flags are flipped for exactly the duration of one entity's two passes
+	// and put back in a finally. Safe only because a renderer is driven by a single thread. Reused
+	// rather than reallocated each frame.
+	private final List<BoneVisibility> savedVisibility = new ArrayList<>();
 
-	public OreTintLayer(GeoRenderer<OreLizardEntity> renderer) {
+	public OreTintLayer(IGeoRenderer<OreLizardEntity> renderer) {
 		super(renderer);
 	}
 
-	@Override
-	public void renderForBone(PoseStack poseStack, OreLizardEntity animatable, GeoBone bone, RenderType renderType,
-			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay) {
-		int slot = GLOWING_BONES.indexOf(bone.getName());
-		if (slot < 0) {
-			return;
-		}
-
-		int color = animatable.getOreVariant().getTintColor();
-		float red = ((color >> 16) & 0xFF) / 255F;
-		float green = ((color >> 8) & 0xFF) / 255F;
-		float blue = (color & 0xFF) / 255F;
-
-		getRenderer().renderCubesOfBone(poseStack, bone, buffer, packedLight, packedOverlay, red, green, blue, 1.0F);
-
-		PendingGlow pendingGlow = this.pending[slot];
-		pendingGlow.bone = bone;
-		pendingGlow.pose.set(poseStack.last().pose());
-		pendingGlow.normal.set(poseStack.last().normal());
-	}
-
-	@Override
-	public void render(PoseStack poseStack, OreLizardEntity animatable, BakedGeoModel bakedModel, RenderType renderType,
-			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay) {
-		// A dormant lizard is meant to be undetectable, and a glow is exactly the thing that would
-		// give it away. GeckoLib already skips the whole render for an invisible entity, so this is
-		// belt-and-braces - but it's the one case where getting it wrong breaks the core mechanic.
-		boolean visible = !animatable.isInvisible();
-		VertexConsumer emissiveBuffer = null;
-
-		for (PendingGlow pendingGlow : this.pending) {
-			GeoBone bone = pendingGlow.bone;
-			pendingGlow.bone = null;
-
-			if (bone == null || !visible) {
-				continue;
-			}
-			if (emissiveBuffer == null) {
-				emissiveBuffer = bufferSource.getBuffer(RenderType.eyes(getTextureResource(animatable)));
-			}
-			renderEmissive(poseStack, animatable, bone, pendingGlow, emissiveBuffer, packedOverlay);
-		}
-	}
-
 	/**
-	 * Draws a bone a second time through {@link RenderType#eyes}, the same render type vanilla uses
-	 * for enderman/spider eye overlays. (Coincidental name clash with our own "eyes" bone - the
-	 * shards go through it too.) Two reasons for that specific render type:
+	 * Both extra passes, in order: the variant tint through the body's own render type, then the
+	 * glow through {@link RenderType#eyes}.
+	 *
+	 * <p>{@code RenderType.eyes} is the same render type vanilla uses for enderman/spider eye
+	 * overlays. (Coincidental name clash with our own "eyes" bone - the shards go through it too.)
+	 * Two reasons for that specific render type:
 	 * <ul>
 	 *   <li>Vanilla: its shader ({@code rendertype_eyes}) never samples the lightmap, so the pass
 	 *       is fullbright regardless of the light level in the cave, and it blends additively -
@@ -122,31 +89,100 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 	 * Depth testing still applies (only the depth <em>write</em> mask is off), so this doesn't
 	 * shine through walls.
 	 *
-	 * <p><b>Why this is deferred out of {@link #renderForBone} instead of drawn inline.</b>
+	 * <p><b>Why the glow can only be drawn from here, after the body is finished.</b>
 	 * {@code RenderType.eyes} isn't one of the fixed buffers in {@code RenderBuffers}, so it shares
 	 * a single {@code BufferBuilder} with the body's own render type. Asking the buffer source for
 	 * it partway through the bone recursion ends the in-progress batch and re-begins that shared
 	 * builder as an eyes batch - so every bone drawn after that one (the tail and legs) got
-	 * rendered fullbright, additive and depth-writeless too. Layers' {@code render} runs after
-	 * {@code actuallyRender} has finished writing the whole model, which is the point where
-	 * swapping render types is safe; GeckoLib's own glow layer switches buffers from exactly here.
-	 *
-	 * <p>Bone matrices have to be carried across because they can't be recomputed later:
-	 * {@code GeoEntityRenderer.actuallyRender} pushes the entity's rotation and model transforms
-	 * and pops them before layers run, and it keeps the model-space matrix in a private field.
+	 * rendered fullbright, additive and depth-writeless too. GeckoLib 3 invokes layers from
+	 * {@code GeoEntityRenderer.render} only once the model pass has returned, which is the point
+	 * where swapping render types is safe. The tint pass asks for the body's render type, so it
+	 * simply continues the body's batch rather than starting a new one.
 	 */
-	private void renderEmissive(PoseStack poseStack, OreLizardEntity animatable, GeoBone bone, PendingGlow pendingGlow,
-			VertexConsumer emissiveBuffer, int packedOverlay) {
-		int color = animatable.getOreVariant().getTintColor();
-		float red = ((color >> 16) & 0xFF) / 255F * GLOW_STRENGTH;
-		float green = ((color >> 8) & 0xFF) / 255F * GLOW_STRENGTH;
-		float blue = (color & 0xFF) / 255F * GLOW_STRENGTH;
+	@Override
+	public void render(PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, OreLizardEntity animatable,
+			float limbSwing, float limbSwingAmount, float partialTick, float ageInTicks, float netHeadYaw, float headPitch) {
+		// GeckoLib 3 runs its layers whether or not it drew the body - the body pass is gated on
+		// exactly this check, the layer loop only on spectator mode - so a layer has to repeat the
+		// check itself. A dormant lizard is invisible, and tinting or lighting up bones that were
+		// never drawn would paint it back into view.
+		if (animatable.isInvisibleTo(Minecraft.getInstance().player)) {
+			return;
+		}
 
-		poseStack.pushPose();
-		poseStack.last().pose().set(pendingGlow.pose);
-		poseStack.last().normal().set(pendingGlow.normal);
-		getRenderer().renderCubesOfBone(poseStack, bone, emissiveBuffer, LightTexture.FULL_BRIGHT, packedOverlay,
-				red, green, blue, 1.0F);
-		poseStack.popPose();
+		GeoModel model = getEntityModel().getModel(getEntityModel().getModelResource(animatable));
+		ResourceLocation texture = getEntityTexture(animatable);
+		// Same overlay the body pass used, so the hurt flash covers the shards too.
+		int packedOverlay = LivingEntityRenderer.getOverlayCoords(animatable, 0.0F);
+		int color = animatable.getOreVariant().getTintColor();
+		float red = ((color >> 16) & 0xFF) / 255F;
+		float green = ((color >> 8) & 0xFF) / 255F;
+		float blue = (color & 0xFF) / 255F;
+
+		isolateGlowingBones(model);
+		try {
+			// Tint: the same render type the body just used, so this is appended to the body's own
+			// batch and draws over the untinted shards at identical depth.
+			RenderType bodyType = getRenderer().getRenderType(animatable, partialTick, poseStack, bufferSource, null,
+					packedLight, texture);
+			getRenderer().render(model, animatable, partialTick, bodyType, poseStack, bufferSource,
+					bufferSource.getBuffer(bodyType), packedLight, packedOverlay, red, green, blue, 1.0F);
+
+			// Glow. A dormant lizard is meant to be undetectable, and a glow is exactly the thing
+			// that would give it away; this is the one case where getting it wrong breaks the core
+			// mechanic, so it is checked on its own even though the gate above already covers it
+			// for every viewer but a spectator.
+			if (animatable.isInvisible()) {
+				return;
+			}
+			RenderType glowType = RenderType.eyes(texture);
+			getRenderer().render(model, animatable, partialTick, glowType, poseStack, bufferSource,
+					bufferSource.getBuffer(glowType), LightTexture.FULL_BRIGHT, packedOverlay,
+					red * GLOW_STRENGTH, green * GLOW_STRENGTH, blue * GLOW_STRENGTH, 1.0F);
+		} finally {
+			restoreBoneVisibility();
+		}
+	}
+
+	/**
+	 * Leaves only the glowing bones drawable. {@code GeoEntityRenderer.renderRecursively} skips a
+	 * hidden bone's entire subtree, so an ancestor of a glowing bone has to stay un-hidden with just
+	 * its own cubes suppressed; everything else is hidden outright. Every touched bone's previous
+	 * flags are recorded first so {@link #restoreBoneVisibility} can put them back exactly.
+	 */
+	private void isolateGlowingBones(GeoModel model) {
+		this.savedVisibility.clear();
+		for (GeoBone bone : model.topLevelBones) {
+			isolateGlowingBones(bone);
+		}
+	}
+
+	/** @return whether this bone or anything beneath it is a glowing bone */
+	private boolean isolateGlowingBones(GeoBone bone) {
+		this.savedVisibility.add(BoneVisibility.capture(bone));
+		boolean glowing = GLOWING_BONES.contains(bone.getName());
+		boolean descendantGlows = false;
+		for (GeoBone child : bone.childBones) {
+			// Non-short-circuit on purpose: every child has to be visited to be hidden.
+			descendantGlows |= isolateGlowingBones(child);
+		}
+
+		if (glowing) {
+			bone.setHidden(false, false);
+			bone.setCubesHidden(false);
+		} else if (descendantGlows) {
+			bone.setHidden(false, false);
+			bone.setCubesHidden(true);
+		} else {
+			bone.setHidden(true, true);
+		}
+		return glowing || descendantGlows;
+	}
+
+	private void restoreBoneVisibility() {
+		for (BoneVisibility saved : this.savedVisibility) {
+			saved.restore();
+		}
+		this.savedVisibility.clear();
 	}
 }

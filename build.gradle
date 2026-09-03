@@ -46,12 +46,6 @@ dependencies {
 
 	// GeckoLib - animation library for the buried/erupt/flee/dig-down state machine
 	modImplementation "${project.geckolib_version}"
-
-	// GeckoLib bundles this as a jar-in-jar (see its fabric.mod.json "jars" entry), but the
-	// current Loom 1.17 dev-launch classpath isn't picking that nested jar up, causing
-	// software.bernie.geckolib.util.JsonUtil to fail NoClassDefFoundError at runClient startup.
-	// Extracted straight out of the GeckoLib jar (META-INF/jars/mclib-20.jar) as a workaround.
-	implementation files('libs/mclib-20.jar')
 }
 
 processResources {

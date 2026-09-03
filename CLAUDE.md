@@ -4,9 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.19.2 (Java 17, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 3.1.40 drives its model/animations — the
+GeckoLib **3** API generation (`software.bernie.geckolib3`), not the 4.x one `main` is written
+against. This branch is the 1.19.2 port of `main`; `main` stays the source of truth for what the
+mob *does*, and the `1.2.0+mc1.19.2` section of CHANGELOG.md lists every place this branch differs
+and why.
 
 ## Commands
 
@@ -18,9 +22,10 @@ walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/anima
 ```
 
 There is no test source set and no linter configured — verification is done by running the client
-and playing. Use `/summon orelizards:ore_lizard` for a raw spawn, or the spawn egg (Spawn Eggs
-creative tab) when you need `finalizeSpawn` to run (variant assignment, deepslate attribution,
-dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards are *not* representative.
+and playing. Use `/summon orelizards:ore_lizard` for a raw spawn, or the spawn egg (Miscellaneous
+creative tab — 1.19.2 has no Spawn Eggs tab) when you need `finalizeSpawn` to run (variant
+assignment, deepslate attribution, dormancy). `/summon` skips `finalizeSpawn`, so summoned lizards
+are *not* representative.
 
 Dependency versions live in [gradle.properties](gradle.properties), not `build.gradle`.
 
@@ -105,44 +110,73 @@ Iris/OptiFine so shader packs treat it as emissive. Deliberately *not* GeckoLib'
 `AutoGlowingGeoLayer`, which needs a per-skin `_glowmask` texture and a custom render type that
 shader packs have no convention for. The pass is skipped for invisible (dormant) lizards.
 
-**Never call `bufferSource.getBuffer(...)` for a new render type from inside `renderForBone`.**
-Only a fixed set of render types get their own `BufferBuilder` in `RenderBuffers`; everything else
-shares one. Asking for a second type partway through the bone recursion ends the in-progress batch
-and re-begins the shared builder under the new type, so every bone drawn *after* that one inherits
-it — which showed up as the lizard's tail and legs rendering fullbright and see-through. Do the
-swap from a layer's `render` instead, which `defaultRender` invokes after `actuallyRender` has
-written the whole model. Bone matrices have to be carried across from `renderForBone` to get there:
-`GeoEntityRenderer.actuallyRender` pushes the entity rotation and model transforms and pops them
-before layers run, keeping the model-space matrix in a private field.
+**How the passes are drawn under GeckoLib 3.** A GeckoLib 3 layer (`GeoLayerRenderer`) has no
+per-bone hook; its single `render` runs after `GeoEntityRenderer.render` has drawn the model and is
+expected to re-render the model itself via `getRenderer().render(model, ...)`. `OreTintLayer`
+therefore hides every bone except `shards`/`eyes` (an ancestor of one stays un-hidden with only its
+own cubes suppressed — `GeoEntityRenderer.renderRecursively` skips a hidden bone's *whole subtree*),
+re-renders once through the body's render type with the tint and once through `RenderType.eyes`,
+and restores the flags in a `finally`. The flags live on the baked `GeoModel`'s `GeoBone`s, which is
+one cached object shared by every lizard on screen — never leave them flipped. Two GeckoLib 3
+traps around this:
+
+- **GeckoLib 3 runs layers even when it skipped the body.** The body pass is gated on
+  `isInvisibleTo(player)`; the layer loop only on `isSpectator()`. A layer must repeat the check or a
+  dormant lizard is painted back into view as a floating tinted glow.
+- **Its default body render type is `entityCutout`, not GeckoLib 4's `entityCutoutNoCull`.**
+  `OreLizardRenderer.getRenderType` pins NoCull for parity with `main`, and the layer asks the
+  renderer for its type rather than naming one, so the tint pass always shares the body's buffer.
+
+**Never call `bufferSource.getBuffer(...)` for a new render type from inside the bone recursion**
+(`renderRecursively`/`renderCube`). Only a fixed set of render types get their own `BufferBuilder`
+in `RenderBuffers`; everything else shares one. Asking for a second type partway through the bone
+recursion ends the in-progress batch and re-begins the shared builder under the new type, so every
+bone drawn *after* that one inherits it — which showed up as the lizard's tail and legs rendering
+fullbright and see-through. Do the swap from the layer's `render`, which GeckoLib 3 invokes only
+once the model pass has returned. The full re-traversal recomputes bone matrices, so nothing needs
+carrying across from the model pass (unlike the GeckoLib 4 layer on `main`).
 
 ### GeckoLib asset contract
 
 Three files must agree, and mismatches fail *silently* (log spam at most):
 
-- Animation names in `RawAnimation.begin().thenPlay("...")` must exactly match the top-level keys
-  in [ore_lizard.animation.json](src/main/resources/assets/orelizards/animations/entity/ore_lizard.animation.json)
+- Animation names in `new AnimationBuilder().addAnimation("...", loopType)` must exactly match the
+  top-level keys in [ore_lizard.animation.json](src/main/resources/assets/orelizards/animations/entity/ore_lizard.animation.json)
   (currently `idle`, `scuttle`, `burrow`, `appear` — bare names, no `animation.orelizard.` prefix).
+  A miss is a `System.out.printf` line, not an exception.
 - Bone names animated in the animation JSON must exist in
   [ore_lizard.geo.json](src/main/resources/assets/orelizards/geo/entity/ore_lizard.geo.json).
   Re-exporting the geometry without the animation (or vice versa) has already broken the tail once.
-- Bone names in `OreTintLayer.TINTED_BONES` must match the geo too.
+- Bone names in `OreTintLayer.GLOWING_BONES` must match the geo too.
 
 After any Blockbench re-export, check all three.
 
-Two GeckoLib timing rules this mob depends on, both learned the hard way:
+Three GeckoLib timing rules this mob depends on, all learned the hard way:
 
-- **Controllers only tick while the entity is being rendered.** `handleAnimations` is called from
-  `GeoEntityRenderer.preRender`, which `defaultRender` skips when the render type is null — which is
-  what happens for an invisible entity. A dormant lizard is `setInvisible(true)`, so its controller
-  is frozen at the bind pose the whole time it is buried. That rules out representing dormancy as a
-  held "buried" animation: it would never be processed.
-- **An animation does not begin on its first frame.** GeckoLib first spends `transitionLength` ticks
-  blending into that frame from the model's current pose, and starts the animation's clock only
-  afterwards. Any animation whose first frame is displaced from the rest pose — `appear` starts 0.81
-  blocks underground — must therefore run with a zero-tick transition, or the model visibly travels
-  into position first. It also means a non-zero transition makes an animation finish
-  `transitionLength` ticks later than its authored length, which has to be accounted for against the
-  state timer driving it.
+- **Controllers tick even while the lizard is buried.** GeckoLib 3's `GeoEntityRenderer.render`
+  calls `setLivingAnimations` *before* its `isInvisibleTo` check, so a dormant lizard's controller is
+  processed every frame it is in view (GeckoLib 4 on `main` skips it, which is why that branch's
+  note says the opposite). It makes no visible difference — the predicate returns `PlayState.STOP`
+  while BURIED, so the controller sits stopped at the bind pose — but don't rely on a buried lizard's
+  controller being frozen, and don't represent dormancy as a held animation on either branch.
+- **An animation does not begin on its first frame.** GeckoLib first spends `transitionLengthTicks`
+  ticks blending into that frame from the model's current pose, and starts the animation's clock
+  only afterwards. Any animation whose first frame is displaced from the rest pose — `appear` starts
+  0.81 blocks underground — must therefore run with a zero-tick transition, or the model visibly
+  travels into position first. It also means a non-zero transition makes an animation finish
+  `transitionLengthTicks` ticks later than its authored length, which has to be accounted for
+  against the state timer driving it. In GeckoLib 3 the transition length is a public `double`
+  field on the controller, read when `setAnimation` queues the blend, so it has to be written
+  *before* that call (the predicate does exactly this).
+- **GeckoLib 3's `HOLD_ON_LAST_FRAME` does not hold.** The loop type exists and
+  `AnimationBuilder.playAndHold` hands it out, but `AnimationController` only ever consults
+  `isRepeatingAfterEnd()`, so it behaves as `PLAY_ONCE`: the controller stops at the end and
+  `AnimationProcessor` eases every bone back to the bind pose over one tick — which for `burrow`
+  is the lizard popping back above ground for the last ten ticks of DIGGING_DOWN.
+  [HoldLastFrameAnimationController](src/main/java/com/orelizards/entity/HoldLastFrameAnimationController.java)
+  fixes it by overriding `adjustTick` to pin the clock just short of the animation length while a
+  hold animation is running. Use it (not a bare `AnimationController`) for any controller that
+  plays a hold animation.
 
 ## Spawning
 
@@ -154,15 +188,26 @@ roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4` (the midpoint of 1.19.2's stone→deepslate blend band, unchanged since 1.18), not by
+sampling blocks.
 
 ## Repo gotchas
 
-- `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
-  dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
-  `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it.
+- There is no `libs/mclib-*.jar` on this branch, unlike `main`. GeckoLib 3.1.40 does ship
+  `META-INF/jars/mclib-20.jar` jar-in-jar, but none of its bytecode references that jar's
+  `com.eliotlash.mclib` package — every use goes to the copy it shades in at
+  `software.bernie.shadowed.eliotlash.mclib`, so the dev classpath needs nothing extra. If
+  `runClient` ever fails with `NoClassDefFoundError` on `com.eliotlash...`, extract that nested jar
+  into `libs/` and add it back as `implementation files(...)`, the way `main` does.
+- GeckoLib 3's mod id is `geckolib3` (4.x is `geckolib`), and `fabric.mod.json` depends on that id.
+  Get it wrong and Fabric Loader refuses to start with "requires any version of geckolib, which is
+  missing" — the build itself will not catch it.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
-  group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
+  group-id churn — the coordinate in `gradle.properties` is opaque on purpose. The jar in
+  `~/.gradle/caches/modules-2` is intermediary-mapped (`class_4587` and friends); the readable,
+  Mojang-mapped copy Loom produces is under `.gradle/loom-cache/remapped_mods/` and is the one to
+  `javap` or decompile (Vineflower is already in the Gradle cache from Loom). GeckoLib 3 has no
+  sources jar on Modrinth, so decompiling is the only way to read it.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
   remote. Ignore it; don't edit anything inside it.
 - `orelizards.mixins.json` is wired up but has no mixins yet.

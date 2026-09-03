@@ -3,9 +3,9 @@ package com.orelizards.client;
 import com.orelizards.OreLizardsMod;
 import com.orelizards.entity.OreLizardEntity;
 import net.minecraft.resources.ResourceLocation;
-import software.bernie.geckolib.model.GeoModel;
+import software.bernie.geckolib3.model.AnimatedGeoModel;
 
-public class OreLizardModel extends GeoModel<OreLizardEntity> {
+public class OreLizardModel extends AnimatedGeoModel<OreLizardEntity> {
 	private static final ResourceLocation MODEL =
 			new ResourceLocation(OreLizardsMod.MOD_ID, "geo/entity/ore_lizard.geo.json");
 	private static final ResourceLocation TEXTURE =

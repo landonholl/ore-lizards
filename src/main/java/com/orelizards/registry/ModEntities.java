@@ -4,7 +4,6 @@ import com.orelizards.OreLizardsMod;
 import com.orelizards.entity.OreLizardEntity;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricEntityTypeBuilder;
 import net.minecraft.core.Registry;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
@@ -12,7 +11,7 @@ import net.minecraft.world.entity.MobCategory;
 
 public final class ModEntities {
 	public static final EntityType<OreLizardEntity> ORE_LIZARD = Registry.register(
-			BuiltInRegistries.ENTITY_TYPE,
+			Registry.ENTITY_TYPE,
 			new ResourceLocation(OreLizardsMod.MOD_ID, "ore_lizard"),
 			// AMBIENT (not CREATURE) - matches the vanilla Bat, the closest real precedent for a
 			// rare cave-dwelling critter. CREATURE shares one population cap with every animal on

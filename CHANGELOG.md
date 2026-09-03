@@ -1,5 +1,92 @@
 # Changelog
 
+## 1.2.0+mc1.19.2
+
+A port of 1.2.0 to Minecraft 1.19.2 - Fabric API 0.77.0, Loader 0.19.5, Java 17. The mob itself is
+unchanged: same state machine, spawn rules, despawn rules, NBT keys, drops, sounds, particles and
+animation timings, and `main` remains the source of truth for what it does. What did change is the
+animation library. 1.19.2 is the last version served by GeckoLib **3** (3.1.40 here) rather than the
+4.x line 1.2.0 was written against, and GeckoLib 3 is a different generation with a different
+rendering contract, so the client half has been re-implemented rather than translated. Everything
+below is a place this branch differs from `main`, with the reason.
+
+### Changed
+
+- **`HOLD_ON_LAST_FRAME` is implemented locally, because GeckoLib 3 only declares it.** The loop
+  type exists in 3.1.40 and `AnimationBuilder.playAndHold` hands it out, but the controller never
+  checks for it: the only loop property it consults is `isRepeatingAfterEnd()`, which is false for it
+  exactly as for `PLAY_ONCE`, so once the clock passes the animation's length the controller stops
+  and `AnimationProcessor` eases every bone back to the bind pose over one tick. For `burrow` that
+  is the lizard popping back up out of the ground for the last ten ticks of DIGGING_DOWN - the very
+  bug 1.1.0 fixed under GeckoLib 4 by switching to `thenPlayAndHold`. The new
+  `HoldLastFrameAnimationController` subclasses the controller and, while a hold animation is in
+  its running state, pins the adjusted tick a hair short of the animation length, so the
+  end-of-animation branch is never taken and the final keyframe keeps being emitted until the
+  predicate asks for something else - at which point the ordinary transition blends away from it.
+  Transitions, `LOOP` and `PLAY_ONCE` are untouched. The public-API alternative - stretching
+  `AnimationData`'s reset length so a stopped controller's bones never ease back - was rejected:
+  it is per-entity rather than per-animation, so it would also have frozen the legs mid-stride
+  whenever the scuttle stopped, and it holds the last *processed* pose, a fraction of a tick short
+  of the authored final frame.
+- **Tint and glow are re-renders of the whole model with every other bone hidden.** A GeckoLib 3
+  layer has no per-bone hook; its single `render` runs after the model pass and is expected to draw
+  the model again itself. `OreTintLayer` therefore hides every bone except `shards` and `eyes` -
+  an ancestor of one stays un-hidden with only its own cubes suppressed, since hiding a bone hides
+  its whole subtree - re-renders once through the body's render type with the variant tint, once
+  more through `RenderType.eyes` at 0.7x the tint and fullbright, then restores every flag in a
+  `finally`, because the baked model is one cached object shared by every lizard on screen. Both
+  passes happen after the model has been written, which is exactly where the render-type swap has
+  to happen anyway (see 1.1.0); the tint pass asks the renderer for the body's own render type, so
+  it appends to the body's batch rather than starting a new one. Nothing needs carrying across from
+  the model pass any more - the second traversal recomputes the bone matrices - so the pending-glow
+  bookkeeping is gone.
+- **The layer repeats the invisibility check.** GeckoLib 3 runs layers whether or not it drew the
+  body: the body pass is gated on `isInvisibleTo(player)`, the layer loop only on spectator mode.
+  Without the layer's own gate a dormant lizard would have been painted back into view as a
+  floating tinted glow. The tint uses the body's exact condition so the two can never disagree;
+  the glow additionally keeps 1.1.0's own `isInvisible()` check.
+- **Body render type pinned to `entityCutoutNoCull`.** GeckoLib 3's default is the back-face-culled
+  `entityCutout`; GeckoLib 4's, which the model was tuned against, is `entityCutoutNoCull`. The
+  renderer overrides `getRenderType` so any face seen edge-on or from behind draws as it did on
+  `main`; the tint layer asks the renderer for its type rather than naming one, so the two cannot
+  drift apart.
+- **`fabric.mod.json` depends on `geckolib3`, not `geckolib`.** GeckoLib 3's Fabric build registers
+  itself under the mod id `geckolib3`; `geckolib` is the 4.x id. With the old id Fabric Loader
+  refused to start at all ("requires any version of geckolib, which is missing"), which is how this
+  was found. The version range stays `*`, since 3.1.40 is the only GeckoLib that serves 1.19.2.
+- **The spawn egg lives in the Miscellaneous creative tab.** 1.19.2 has neither a Spawn Eggs tab nor
+  a creative-tab event API; vanilla's own eggs sit in Misc and an item names its tab on its
+  `Item.Properties`. The egg's two colours are unchanged, and 1.19.2's `ItemColors` registers every
+  `SpawnEggItem` through `SpawnEggItem.eggs()`, so a modded egg is coloured without further work.
+- **`libs/mclib-20.jar` and its `build.gradle` line are gone.** GeckoLib 3.1.40 does still ship
+  `META-INF/jars/mclib-20.jar`, but none of its bytecode references that jar's `com.eliotlash.mclib`
+  package: every use goes to the copy it shades in at `software.bernie.shadowed.eliotlash.mclib`
+  (twelve classes reference the shaded package, none the nested one). The nested jar is dead
+  weight, and the workaround it existed for has nothing to work around. Should a
+  `NoClassDefFoundError` on `com.eliotlash...` ever appear in a dev run, the fix is to extract that
+  nested jar back out into `libs/`, not to hunt for a different `N`.
+
+### Notes
+
+- **Controllers now tick while the lizard is buried.** GeckoLib 3 runs `setLivingAnimations` before
+  its invisibility check, so unlike GeckoLib 4 the controller is processed every frame a dormant
+  lizard is in view. Behaviourally identical - the predicate returns `PlayState.STOP` while BURIED
+  and the controller sits stopped at the bind pose - but the CLAUDE.md rule against representing
+  dormancy as a held animation now stands for a different reason.
+- Under GeckoLib 3 a zero-tick transition shows the animation's first frame on the frame the state
+  flips and starts its clock on the next render frame, so `appear` and `burrow` land a fraction of
+  a tick later than on `main`. The transition-length field is written before `setAnimation` in the
+  predicate, which is the order GeckoLib 3 requires.
+- Nothing calls `GeckoLib.initialize()` from this mod: GeckoLib 3's Fabric build does that from its
+  own `main` entrypoint. In a development run GeckoLib also registers its example content, which is
+  harmless and can be silenced with `-Dgeckolib.disable_examples=true`.
+- **Not verified in a client.** This port was verified by building and by a headless dedicated
+  server run (init, entity registration, `/summon`). The re-implemented tint and glow passes, the
+  hold controller, and the `entityCutoutNoCull` parity were checked against GeckoLib 3.1.40's
+  decompiled source, not by rendering a lizard - the first client run should confirm the shards
+  and eyes tint and glow, that nothing else on the body does, and that a burrowing lizard stays
+  underground for the whole of DIGGING_DOWN.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it
