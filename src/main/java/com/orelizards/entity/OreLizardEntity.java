@@ -241,7 +241,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return;
 		}
 
-		Player player = this.level().getNearestPlayer(this, -1.0);
+		Player player = this.level.getNearestPlayer(this, -1.0);
 		// No players in this dimension at all: nobody to preserve it for, but nobody to notice it
 		// go either, and in practice its chunk isn't loaded to tick this. Leave it be.
 		if (player == null) {
@@ -250,7 +250,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (player.distanceToSqr(this) < DORMANT_DESPAWN_RADIUS_SQ) {
 			return;
 		}
-		if (isUnderground(this.level(), player.blockPosition())) {
+		if (isUnderground(this.level, player.blockPosition())) {
 			return;
 		}
 
@@ -345,7 +345,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	@Override
 	public void tick() {
 		super.tick();
-		if (this.level().isClientSide) {
+		if (this.level.isClientSide) {
 			return;
 		}
 		this.emitSparkTrail();
@@ -369,7 +369,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (this.getLizardState() == State.BURIED || this.tickCount % SPARK_INTERVAL_TICKS != 0) {
 			return;
 		}
-		if (!(this.level() instanceof ServerLevel serverLevel)) {
+		if (!(this.level instanceof ServerLevel serverLevel)) {
 			return;
 		}
 		// Zero speed: the sparks are left hanging where the lizard was rather than being thrown, so
@@ -382,7 +382,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		// Uses vanilla's own named predicate rather than the boolean overload - that boolean's
 		// polarity is the opposite of what it reads like (false = NO_SPECTATORS, which still
 		// detects creative players), which previously let creative players wake dormant lizards.
-		Player nearest = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
+		Player nearest = this.level.getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
 				EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		if (nearest != null) {
 			this.beginErupting(nearest);
@@ -485,15 +485,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 * lizard gets.
 	 */
 	private boolean isValidFleeTarget(@Nullable LivingEntity target) {
-		return target != null && target.isAlive() && target.level() == this.level();
+		return target != null && target.isAlive() && target.level == this.level;
 	}
 
 	private void spawnBurstParticles() {
 		this.playSound(this.isDeepslate() ? SoundEvents.DEEPSLATE_BREAK : SoundEvents.STONE_BREAK, 1.0F, 1.0F);
-		if (!(this.level() instanceof ServerLevel serverLevel)) {
+		if (!(this.level instanceof ServerLevel serverLevel)) {
 			return;
 		}
-		BlockState blockState = this.level().getBlockState(this.blockPosition().below());
+		BlockState blockState = this.level.getBlockState(this.blockPosition().below());
 		serverLevel.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, blockState),
 				this.getX(), this.getY() + 0.5, this.getZ(), 20, 0.3, 0.3, 0.3, 0.05);
 	}
@@ -592,7 +592,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (threat == null) {
 			// Environmental damage - lava, a falling block, a hit from something with no owner.
 			// There is usually still a player behind it, so run from the nearest one if there is any.
-			threat = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(),
+			threat = this.level.getNearestPlayer(this.getX(), this.getY(), this.getZ(),
 					PANIC_TARGET_SEARCH_RANGE, EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		}
 		if (!this.isValidFleeTarget(threat)) {

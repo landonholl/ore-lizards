@@ -4,9 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.19.4 (Java 17, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.2 drives its model/animations.
+
+This branch is the **1.19.4 port**. Behaviour is defined by `main` (1.20.1, GeckoLib 4.8.4) and must
+track it. The only source-level difference is that `Entity.level` is a public field here
+(`this.level`, `target.level`) - the `level()` accessor arrived in 1.20. `setMaxUpStep`,
+`RandomSource`, `Tag.TAG_STRING`, `BuiltInRegistries` and
+`ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.SPAWN_EGGS)` (a `CreativeModeTab` instance in
+1.19.4; a `ResourceKey` from 1.20) all exist exactly as used.
 
 ## Commands
 
@@ -113,7 +120,7 @@ it — which showed up as the lizard's tail and legs rendering fullbright and se
 swap from a layer's `render` instead, which `defaultRender` invokes after `actuallyRender` has
 written the whole model. Bone matrices have to be carried across from `renderForBone` to get there:
 `GeoEntityRenderer.actuallyRender` pushes the entity rotation and model transforms and pops them
-before layers run, keeping the model-space matrix in a private field.
+before layers run, keeping the model-space matrix in a field of its own (`modelRenderTranslations`, protected in 4.2).
 
 ### GeckoLib asset contract
 
@@ -131,11 +138,16 @@ After any Blockbench re-export, check all three.
 
 Two GeckoLib timing rules this mob depends on, both learned the hard way:
 
-- **Controllers only tick while the entity is being rendered.** `handleAnimations` is called from
-  `GeoEntityRenderer.preRender`, which `defaultRender` skips when the render type is null — which is
-  what happens for an invisible entity. A dormant lizard is `setInvisible(true)`, so its controller
-  is frozen at the bind pose the whole time it is buried. That rules out representing dormancy as a
-  held "buried" animation: it would never be processed.
+- **Whether the controller ticks while the lizard is invisible depends on the GeckoLib version, so
+  never rely on it either way.** On 4.8.4 (`main`) `handleAnimations` runs from
+  `GeoEntityRenderer.preRender`, which `defaultRender` skips for an invisible entity, so a dormant
+  lizard's controller is frozen at the bind pose the whole time it is buried. On the 4.2 used here,
+  `actuallyRender` calls `handleAnimations` *before* its `isInvisibleTo` check, so the controller
+  keeps ticking while buried and only the cube draw - and with it the per-bone `renderForBone` hook -
+  is skipped; the layer's `render` still runs, which is why the `isInvisible()` guard in
+  `OreTintLayer.render` is load-bearing on this version. Both versions rule out representing dormancy
+  as a held "buried" animation: on one it would never be processed, on the other it would diverge
+  from `main`.
 - **An animation does not begin on its first frame.** GeckoLib first spends `transitionLength` ticks
   blending into that frame from the model's current pose, and starts the animation's clock only
   afterwards. Any animation whose first frame is displaced from the rest pose — `appear` starts 0.81
@@ -154,11 +166,11 @@ roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4` (the midpoint of the stone→deepslate blend band, unchanged from 1.18 through 1.20.1), not by sampling blocks.
 
 ## Repo gotchas
 
-- `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
+- `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar (4.2's nested copy is the same class set as the checked-in one), but Loom 1.17's
   dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
   `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its

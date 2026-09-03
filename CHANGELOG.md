@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.2.0+mc1.19.4
+
+A port of 1.2.0 to Minecraft 1.19.4, on GeckoLib 4.2 and Fabric API 0.87.2. The mob behaves exactly
+as it does in 1.2.0 on 1.20.1; nothing in this version of the game or of GeckoLib forced a
+substitution, so this section is mostly a record of what was checked and what could not be.
+
+### Changed
+
+- **Dependencies.** Minecraft 1.19.4, Fabric Loader 0.19.5, Fabric API 0.87.2+1.19.4, GeckoLib 4.2
+  (Modrinth version `fWtfrvf2`), Java 17, Loom 1.17. The `minecraft` dependency in `fabric.mod.json`
+  is pinned to exactly `1.19.4`, because that is the only game version this GeckoLib build is
+  published for. The mod version is `1.2.0+mc1.19.4`.
+- **The only source change is how the entity reaches its level.** `Entity.level` is a public field in
+  1.19.4 - the `level()` accessor arrived in 1.20 - so `this.level()` and `target.level()` became
+  field reads. Everything else the mod calls (`setMaxUpStep`, `RandomSource`, `Tag.TAG_STRING`,
+  `BuiltInRegistries`, `EntitySelector.NO_CREATIVE_OR_SPECTATOR`, `DefaultRandomPos`, the JOML
+  `Matrix4f`/`Matrix3f` the tint layer captures, and Fabric's `ItemGroupEvents.modifyEntriesEvent`
+  taking `CreativeModeTabs.SPAWN_EGGS`) exists with the same shape and compiled untouched.
+- **GeckoLib 4.2 presents the same API surface this mod uses as 4.8.4**, so the entity, model,
+  renderer and tint layer are unchanged: `RawAnimation.thenPlayAndHold`,
+  `AnimationController.transitionLength(int)`, `AnimationState.isMoving()`,
+  `GeckoLibUtil.createInstanceCache`, the `GeoRenderLayer.renderForBone`/`render` hooks and
+  `GeoRenderer.renderCubesOfBone(..., r, g, b, a)` were each confirmed against the 4.2 jar. Its
+  per-bone order is still `renderCubesOfBone`, then `applyRenderLayersForBone`, then the children,
+  and a layer's `render` still runs after the whole model has been written, so the deferred emissive
+  pass and the never-swap-buffers-mid-recursion rule it exists for carry over as they are.
+- **The `mclib` workaround is unchanged.** GeckoLib 4.2 nests `META-INF/jars/mclib-20.jar` just as
+  4.8.4 does, and its contents are the same 84 entries at the same sizes as the checked-in
+  `libs/mclib-20.jar` - only the zip timestamps differ - so the existing jar and dependency line stay.
+
+### Notes
+
+- **One GeckoLib timing difference, with no visible effect.** In 4.2, `GeoEntityRenderer.actuallyRender`
+  calls `handleAnimations` *before* it checks `isInvisibleTo`, so the animation controller keeps
+  ticking while a dormant lizard is invisible; on 4.8.4 it is frozen. Nothing here depends on that
+  either way - the controller returns `PlayState.STOP` for a stationary dormant lizard, and both
+  state animations start with a zero-tick transition - but the "controllers only tick while rendered"
+  rule recorded for 4.8.4 does not hold on this version. The cube draw and the per-bone layer hook
+  are still skipped for an invisible entity while the layer's `render` still runs, which makes the
+  `isInvisible()` guard in `OreTintLayer.render` genuinely load-bearing here.
+- **Worldgen thresholds keep their meaning.** 1.19.4 has the same stone-to-deepslate blend band (Y 0
+  down to -8) as 1.20.1, so the `Y < -4` deepslate attribution and the `Y < 50` spawn ceiling are
+  unchanged and still describe the rock the lizard sits in.
+- **Verified headless only.** The port was checked by a clean build and a dedicated-server smoke test
+  (mod init, `/summon orelizards:ore_lizard`, orderly stop). The tint and emissive passes, the spark
+  trail, the animations and the spawn egg listing could not be exercised without a client and remain
+  to be looked at in-game.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it
