@@ -1,5 +1,105 @@
 # Changelog
 
+## 1.2.0+mc1.21.11
+
+A port of 1.2.0 to Minecraft 1.21.11 (Fabric Loader 0.19.5, Fabric API 0.141.6, GeckoLib 5.4.5,
+Java 21), built on top of the 1.21.5 port below - the 1.21.6 through 1.21.10 changes are all absorbed
+here, there is no intermediate branch between the two. The mob is meant to behave exactly as it does on
+1.20.1. Everything the `## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections list
+still applies here unchanged - the render-state `DataTicket`s, `hurtServer`, the pickaxes tag plus the
+diamond-ore harvest check standing in for "iron or better", the baked spawn egg texture, the
+`STEP_HEIGHT` attribute, the id-keyed flee modifier, the packed-int tint colours, vanilla's
+`EntityType.Builder`, `Item.Properties.setId`, `SpawnPlacements.register` through Fabric's access
+widener, and no `mclib` jar (GeckoLib 5.4.5 has no `META-INF/jars/` either) - and is not repeated.
+Below is only what 1.21.6 through 1.21.11 and the GeckoLib 5.1 → 5.4 jump forced on top of that. Plain
+renames are not listed: `ResourceLocation` is `Identifier`, `Level.isClientSide` is a method,
+GeckoLib's `AnimationController` moved back up to `animation` with `PlayState` under
+`animation.object`, `BakedGeoModel`/`GeoBone` moved to `cache.model`, `transitionLength` is
+`setTransitionTicks`, `addRenderLayer` is `withRenderLayer`, `GeoModel.addAdditionalStateData` and
+`GeoRenderLayer.addRenderData` grew a "related object" and a partial-tick argument respectively. The
+renderer-side signature changes are covered only where they changed how something works.
+
+### Changed
+
+- **The client no longer draws the lizard; it submits it, so the rendering layer was rewritten a
+  second time, around vanilla's 1.21.9 submit/collector model.** Entity renderers now hand geometry
+  to a `SubmitNodeCollector`, which files each submission under its render type together with a copy
+  of the pose it was submitted with, and vanilla plays everything back after all entities are in,
+  one buffer per render type. GeckoLib 5.4 follows suit: its model pass is a single
+  `submitCustomGeometry`, its layer hooks take a `RenderPassInfo` and the collector, and a layer's
+  per-bone tasks run at submission time with the pose stack placed at the bone in its animated pose.
+  Nothing about the three-pass structure changed - base model, the `shards`/`eyes` bones again
+  multiplied by the variant colour, then those two bones once more fullbright through vanilla's
+  `eyes` render type at 0.7 × the colour, skipped for an invisible lizard - but the mechanics did,
+  twice over:
+  - *The bone-pose bookkeeping is gone.* Both the 1.20.1 and 1.21.5 layers spent most of their code
+    carrying a bone's matrices from the point they were available to the point the emissive draw was
+    safe. The collector now captures the pose the moment the per-bone task submits, so the task
+    simply submits both extra passes for its bone and vanilla plays them back later with the right
+    buffer. The playback callback draws just that bone's cubes from the captured pose, translating
+    away from the pivot first because GeckoLib hands a per-bone task the pose *at* the pivot, which is
+    GeckoLib's own recipe from its `CustomBoneTextureGeoLayer`. Invisibility is read off vanilla's
+    `EntityRenderState.isInvisible` instead of a ticket of our own, since that field is exactly
+    `Entity.isInvisible()` at extraction time.
+  - *The emissive pass is submitted at collector order 1, one order after the body and the tint.* The
+    old rule - never ask the buffer source for a different render type while the model's batch is
+    being written - still describes how `MultiBufferSource.BufferSource` works: every render type
+    without a dedicated buffer shares one builder, and requesting another shared type draws whatever
+    that builder holds. What changed underneath is that the entity cutout types are no longer among
+    the dedicated buffers, so the body itself now lives in the shared builder, and that the collector
+    replays custom geometry per render type out of a plain `HashMap`, with no ordering between types.
+    Filed at order 0 next to the body, the glow's `eyes` list could be replayed first, drawn the
+    instant the body's type was requested, and then painted over by the body - which the glow, writing
+    no depth, cannot keep out. Orders are replayed in ascending sequence, each in full before the
+    next, so an order-1 glow is buffered only after the body has been written, and the body's batch is
+    flushed by the first shared-type request order 1 makes. That is the same ordering property the
+    1.20.1 code got from deferring the swap until after the whole model, expressed in the collector's
+    terms - and it is exactly what vanilla's own `EyesLayer` (spider and enderman eyes) does. The
+    tint pass stays at order 0 in the model's own render type: the collector keeps one list per type
+    in submission order, so it lands in the model's batch after the model's quads, the same append
+    it always was.
+  GeckoLib's `AutoGlowingGeoLayer` was looked at again as the 5.4 reference for an extra pass and
+  rejected for the same reasons as before - it re-renders the whole model through a GeckoLib-private
+  `geckolib_emissive` pipeline shader packs have no convention for, and needs a `_glowmask` texture
+  per skin - though its use of order 1 for the emissive submission is the same conclusion reached
+  here. `RenderTypes.eyes` (now under `client.renderer.rendertype`) is still the spider-eyes type
+  Iris and OptiFine map to `gbuffers_spidereyes`; its pipeline is `RenderPipelines.EYES`.
+- **Saved-lizard data goes through `ValueOutput`/`ValueInput`.** 1.21.6 replaced the `CompoundTag`
+  overloads of `addAdditionalSaveData`/`readAdditionalSaveData` with typed views the game fills in and
+  reads back itself. The keys (`OreVariant` as the enum name, `Deepslate` as a boolean) and their
+  types are unchanged, so worlds saved by any earlier version of the mod load, and `ValueInput` kept
+  the `Optional`-returning `getString` and the defaulted `getBooleanOr` 1.21.5 introduced on
+  `CompoundTag`, so the "unknown or missing variant keeps the default" behaviour is the same code path
+  as before.
+- **The spawn egg names its mob through a data component.** `SpawnEggItem` lost its `EntityType`
+  constructor argument in 1.21.6; the item is a plain `SpawnEggItem(Item.Properties)` and the entity it
+  spawns is a default component set through `Item.Properties.spawnEgg(EntityType)`. Same egg, same
+  behaviour; only the wiring moved. The baked texture, item model and item model definition from the
+  1.21.5 port are unchanged - 1.21.11's item model definitions still accept them as written.
+- **The zero-tick `appear`/`burrow` transition still takes effect on the frame it is requested.** This
+  is a check rather than a change: the mob depends on `setTransitionTicks(0)` inside the controller
+  handler applying to the animation the same handler call starts (see the 1.2.0 notes on why `appear`
+  must start on its first frame). GeckoLib 5.4's `AnimationController` reads its transition-tick field
+  after the handler returns when it builds the timeline for a non-triggered animation, so it does; the
+  captured pre-handler value is only used for animations started through `triggerAnim`, which this mod
+  never uses.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 1.21.11 + GeckoLib 5.4.5 and
+  smoke-tested on a headless dedicated server only. This is the second rewrite of the layer in two
+  versions and the first under the submit/collector model, so everything in it wants a look in a
+  client before release: that the tint lands on the model's own batch (the two bones exactly as
+  tinted as on 1.20.1, no re-typed tail or legs), that the order-1 glow is drawn over the body rather
+  than under it and does not shine through walls, that a buried lizard draws nothing, that the
+  `appear`/`burrow` transitions still start on their first frame under GeckoLib 5.4's timeline code,
+  that `IS_MOVING` fires the scuttle at the same speeds as before, and that the egg icon reads as the
+  grey-and-cyan egg it was. Also unverified: how a spectator sees a buried lizard - GeckoLib draws
+  invisible mobs as translucent ghosts for spectators, and the tint pass is submitted opaque into that
+  translucent render type, so the two bones may read solid on a ghostly body; the glow is skipped in
+  that case as intended - and whether Iris maps the `eyes` render type to `gbuffers_spidereyes` on
+  1.21.11's render-pipeline-based render types as it did on the shader-based ones.
+
 ## 1.2.0+mc1.21.5
 
 A port of 1.2.0 to Minecraft 1.21.5 (Fabric Loader 0.19.5, Fabric API 0.128.2, GeckoLib 5.1.0,

@@ -5,11 +5,10 @@ import com.orelizards.entity.ai.FleeAndBurrowGoal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -40,13 +39,15 @@ import net.minecraft.world.level.ServerLevelAccessor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
 import software.bernie.geckolib.animatable.manager.AnimatableManager;
-import software.bernie.geckolib.animatable.processing.AnimationController;
-import software.bernie.geckolib.animation.PlayState;
+import software.bernie.geckolib.animation.AnimationController;
 import software.bernie.geckolib.animation.RawAnimation;
+import software.bernie.geckolib.animation.object.PlayState;
 import software.bernie.geckolib.util.GeckoLibUtil;
 
 public class OreLizardEntity extends PathfinderMob implements GeoEntity {
@@ -78,10 +79,10 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final String TAG_ORE_VARIANT = "OreVariant";
 	private static final String TAG_DEEPSLATE = "Deepslate";
 
-	// 1.21 keys attribute modifiers by ResourceLocation instead of UUID, and the id doubles as the
+	// 1.21 keys attribute modifiers by Identifier instead of UUID, and the id doubles as the
 	// modifier's name - there is no separate display string any more.
-	private static final ResourceLocation FLEE_SPEED_MODIFIER_ID =
-			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "flee_speed_boost");
+	private static final Identifier FLEE_SPEED_MODIFIER_ID =
+			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "flee_speed_boost");
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
@@ -278,11 +279,14 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		return super.finalizeSpawn(level, difficulty, spawnReason, spawnGroupData);
 	}
 
+	// 1.21.6 replaced the CompoundTag overloads with ValueOutput/ValueInput - typed views over the
+	// save data that the game fills in (or reads back) itself - so the entity never sees the tag. The
+	// keys and value types written are the same as before, so worlds saved by earlier versions load.
 	@Override
-	public void addAdditionalSaveData(CompoundTag tag) {
-		super.addAdditionalSaveData(tag);
-		tag.putString(TAG_ORE_VARIANT, this.getOreVariant().name());
-		tag.putBoolean(TAG_DEEPSLATE, this.isDeepslate());
+	public void addAdditionalSaveData(ValueOutput output) {
+		super.addAdditionalSaveData(output);
+		output.putString(TAG_ORE_VARIANT, this.getOreVariant().name());
+		output.putBoolean(TAG_DEEPSLATE, this.isDeepslate());
 	}
 
 	/**
@@ -300,15 +304,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 * ore of an already-discovered lizard, which is worse than one legacy lizard reading as coal.
 	 */
 	@Override
-	public void readAdditionalSaveData(CompoundTag tag) {
-		super.readAdditionalSaveData(tag);
-		// 1.21.5's CompoundTag getters hand back Optionals - empty when the key is missing or holds a
-		// different tag type - in place of a default value plus a separate typed contains() check. The
-		// two "keep the default" cases, no variant recorded and a name this version doesn't know, both
-		// fall out of the empty Optional: byName returns null for an unknown name and map() turns that
-		// into empty, so setOreVariant is only ever called with a real variant.
-		tag.getString(TAG_ORE_VARIANT).map(OreVariant::byName).ifPresent(this::setOreVariant);
-		this.setDeepslate(tag.getBooleanOr(TAG_DEEPSLATE, false));
+	public void readAdditionalSaveData(ValueInput input) {
+		super.readAdditionalSaveData(input);
+		// ValueInput keeps the Optional-returning getters 1.21.5 gave CompoundTag: getString is empty
+		// when the key is missing or holds a different type, getBooleanOr takes the default. The two
+		// "keep the default" cases, no variant recorded and a name this version doesn't know, both fall
+		// out of the empty Optional: byName returns null for an unknown name and map() turns that into
+		// empty, so setOreVariant is only ever called with a real variant.
+		input.getString(TAG_ORE_VARIANT).map(OreVariant::byName).ifPresent(this::setOreVariant);
+		this.setDeepslate(input.getBooleanOr(TAG_DEEPSLATE, false));
 		this.becomeDormant();
 	}
 
@@ -348,7 +352,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	@Override
 	public void tick() {
 		super.tick();
-		if (this.level().isClientSide) {
+		if (this.level().isClientSide()) {
 			return;
 		}
 		this.emitSparkTrail();
@@ -677,15 +681,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			// up with the state timers: appear is exactly 1 second, as is ERUPT_DURATION_TICKS,
 			// where previously the transition ate a quarter of the eruption.
 			if (lizardState == State.DIGGING_DOWN) {
-				controller.transitionLength(STATE_TRANSITION_TICKS);
+				controller.setTransitionTicks(STATE_TRANSITION_TICKS);
 				return test.setAndContinue(BURROW_ANIM);
 			}
 			if (lizardState == State.ERUPTING) {
-				controller.transitionLength(STATE_TRANSITION_TICKS);
+				controller.setTransitionTicks(STATE_TRANSITION_TICKS);
 				return test.setAndContinue(APPEAR_ANIM);
 			}
 
-			controller.transitionLength(MOVEMENT_TRANSITION_TICKS);
+			controller.setTransitionTicks(MOVEMENT_TRANSITION_TICKS);
 			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
 			// mobs use for their walk cycle; in GeckoLib 5 it reads the IS_MOVING render-state entry
 			// GeoEntityRenderer fills from walkAnimation.speed()) rather than our own isFleeing()
