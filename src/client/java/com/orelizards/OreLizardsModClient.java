@@ -3,12 +3,14 @@ package com.orelizards;
 import com.orelizards.client.OreLizardRenderer;
 import com.orelizards.registry.ModEntities;
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
+import net.minecraft.client.renderer.entity.EntityRenderers;
 
 public class OreLizardsModClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		OreLizardsMod.LOGGER.info("Ore Lizards client initializing");
-		EntityRendererRegistry.register(ModEntities.ORE_LIZARD, OreLizardRenderer::new);
+		// Vanilla's own registrar, reachable because Fabric API's transitive access wideners open it - Fabric
+		// deprecated its EntityRendererRegistry wrapper in favour of exactly this call.
+		EntityRenderers.register(ModEntities.ORE_LIZARD, OreLizardRenderer::new);
 	}
 }

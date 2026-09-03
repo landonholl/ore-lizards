@@ -1,5 +1,96 @@
 # Changelog
 
+## 1.2.0+mc1.21.10
+
+**Experimental.** A port of 1.2.0 to Minecraft 1.21.10 (Fabric Loader 0.19.5, Fabric API 0.138.4,
+GeckoLib **5.3-alpha-3**, Java 21), built on top of the 1.21.11 port below - one vanilla version back,
+and one GeckoLib generation back with it. 5.3-alpha-3 is the *only* GeckoLib build published for Fabric
+1.21.10, and it is an alpha: its renderer sits between the 5.1 release the 1.21.5 port used and the 5.4
+release the 1.21.11 port used, and it carries at least one bug this port had to design around. Nothing
+on this branch has been rendered in a client. It compiles, boots a dedicated server and summons a
+lizard; treat everything about how it looks as unverified until someone has watched one erupt.
+
+The mob is meant to behave exactly as it does on 1.20.1. Everything the `## 1.2.0+mc1.21.11`,
+`## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections list still applies here
+unchanged - the submit/collector rendering model and the order-1 glow, `ValueOutput`/`ValueInput`
+saves, the spawn egg as a data component, the render-state `DataTicket`s, `hurtServer`, the pickaxes
+tag plus the diamond-ore harvest check standing in for "iron or better", the baked spawn egg texture,
+the `STEP_HEIGHT` attribute, the id-keyed flee modifier, the packed-int tint colours, vanilla's
+`EntityType.Builder`, `Item.Properties.setId`, `SpawnPlacements.register` through Fabric's access
+widener, and no `mclib` jar (5.3-alpha-3 has no `META-INF/jars/` either) - and is not repeated. Below
+is only what stepping back to 1.21.10 and down to GeckoLib 5.3-alpha-3 forced on top of that. Plain
+renames running the other way are not listed: 1.21.10 is before the `Identifier` rename, so it is
+`ResourceLocation` again; `RenderTypes.eyes` is `RenderType.eyes` on `client.renderer.RenderType`
+again; GeckoLib's `AnimationController` and `AnimationTest` are back under `animatable.processing`,
+`PlayState` under `animation`, `BakedGeoModel`/`GeoBone`/`GeoCube` under `cache.object`,
+`setTransitionTicks` is `transitionLength`, and `GeoModel.addAdditionalStateData` has no
+"related object" argument.
+
+### Changed
+
+- **The rendering layer was written a third time, for GeckoLib 5.3-alpha-3's hooks, and the
+  bone-pose capture the 1.21.11 port had retired is back.** The alpha has 5.4's submit-model layer
+  hooks - a layer's `submitRenderTask` runs right after GeckoLib has submitted the model, and there is
+  an `addPerBoneRender` registrar - but as flat argument lists rather than a `RenderPassInfo`, and
+  its per-bone tasks, which the 1.21.11 layer submitted both extra passes from, cannot be used here:
+  - *They see the wrong pose.* The `GeoBone`s of a model are shared by every entity drawing it and are
+    posed only inside the model's own playback callback (GeckoLib runs the frame's animation there,
+    then draws). Per-bone tasks run at *submission* time, before any callback for the frame has run,
+    so the pose they are handed is the previous frame's - or, with two lizards in view, the other
+    lizard's.
+  - *They are placed wrong.* The alpha's `GeoBone.transformToBone`, which positions a task's pose
+    stack, walks the bone chain child-first, which is the wrong multiplication order for any nested
+    bone; both of ours are nested (`body → shards`, `body → head → eyes`).
+  So `OreTintLayer.submitRenderTask` submits the two extra passes itself. The tint goes into the
+  model's own render type at order 0, exactly as before, and that placement is now load-bearing twice
+  over: the collector keeps one list per render type in submission order, so the tint callback replays
+  immediately after the model's callback for the same lizard - in the same batch, and, because the
+  model's callback has just posed the shared bones for this lizard, with the right pose. The callback
+  walks the bone tree from the model root with GeckoLib's own per-bone transform
+  (`RenderUtil.prepMatrixForBone`, the five steps `GeoEntityRenderer.renderBone` applies), draws only
+  the `shards` and `eyes` cubes tinted, and records each one's pose as it does so. The glow goes into
+  `RenderType.eyes` at order 1, as before and as vanilla's `EyesLayer` does, and is drawn from those
+  recorded poses - it cannot walk the tree again, because by the time order 1 replays the shared bones
+  hold whichever lizard was drawn last. Re-running the animation from the glow callback, which is
+  what GeckoLib's own `TextureLayerGeoLayer`/`AutoGlowingGeoLayer` do through `buildRenderTask`, was
+  rejected: a second tick in the same frame re-poses a controller whose handler had returned `STOP`,
+  because `finishRenderPass` has already cleared the play state the first tick was gated on. The
+  result is the 1.20.1 layer's own shape again - capture the bone poses during the pass that has them,
+  draw the emissive pass from the captures after the model is written - with the collector supplying
+  the deferral instead of a field. The three passes, the tint's multiply, the 0.7 × glow through the
+  real `eyes` render type, the never-swap-a-buffer-mid-batch rule and the skip for an invisible lizard
+  are all unchanged. `AutoGlowingGeoLayer` was rejected again for the same reasons as on every
+  previous version (private `geckolib_emissive` pipeline, per-skin `_glowmask`).
+- **The renderer is registered through vanilla's `EntityRenderers.register`.** Fabric API 0.138.4
+  deprecates its `EntityRendererRegistry` wrapper in favour of the vanilla method, which its transitive
+  access wideners make callable (the same mechanism that opens `SpawnPlacements.register`). Same
+  registration, same timing; the only change is dropping the wrapper.
+- **The zero-tick `appear`/`burrow` transition still takes effect on the frame it is requested.**
+  A check rather than a change, redone against the alpha because the 1.21.11 note was about 5.4's
+  timeline code: on 5.3 the handler runs during render-state extraction
+  (`AnimationController.prepareForRenderPass`) and the transition keyframes are built at playback in
+  `beginTick`, which reads the `transitionLength` field the handler set, and a zero-length transition
+  point evaluates straight to its end value. So `transitionLength(0)` inside the handler applies to the
+  animation the same handler call starts.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance - more so than on any other branch.** Compiled against
+  1.21.10 + GeckoLib 5.3-alpha-3 and smoke-tested on a headless dedicated server only, and the layer's
+  correctness now rests on two facts about the collector that were read out of the class files rather
+  than observed: that custom geometry is replayed per render type in submission order (so the tint
+  callback runs right after the model's and inherits its pose) and that `RenderType.entityCutoutNoCull`
+  hands back one memoised instance per texture (so both land in the same list). If either fails to hold
+  the two bones would render at a stale pose, which would show as the tint and glow lagging or
+  detaching from the body during `appear`/`burrow`. Everything the 1.21.11 list wants checked in a
+  client wants checking here too: the tint on the model's own batch, the order-1 glow drawn over the
+  body and not through walls, a buried lizard drawing nothing, the first-frame `appear`/`burrow` start,
+  `IS_MOVING` firing the scuttle at the same speeds, the egg icon, the spectator's ghost, and whether
+  Iris maps the `eyes` type to `gbuffers_spidereyes` on 1.21.10. And beyond the layer: the alpha's own
+  model pass (animation processing inside the playback callback) has not been watched either, so any
+  animation defect in a client should be suspected of being GeckoLib's before it is suspected of being
+  ours.
+
 ## 1.2.0+mc1.21.11
 
 A port of 1.2.0 to Minecraft 1.21.11 (Fabric Loader 0.19.5, Fabric API 0.141.6, GeckoLib 5.4.5,

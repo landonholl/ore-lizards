@@ -8,7 +8,7 @@ import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -45,9 +45,9 @@ import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
 import software.bernie.geckolib.animatable.manager.AnimatableManager;
-import software.bernie.geckolib.animation.AnimationController;
+import software.bernie.geckolib.animatable.processing.AnimationController;
 import software.bernie.geckolib.animation.RawAnimation;
-import software.bernie.geckolib.animation.object.PlayState;
+import software.bernie.geckolib.animation.PlayState;
 import software.bernie.geckolib.util.GeckoLibUtil;
 
 public class OreLizardEntity extends PathfinderMob implements GeoEntity {
@@ -79,10 +79,10 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final String TAG_ORE_VARIANT = "OreVariant";
 	private static final String TAG_DEEPSLATE = "Deepslate";
 
-	// 1.21 keys attribute modifiers by Identifier instead of UUID, and the id doubles as the
+	// 1.21 keys attribute modifiers by ResourceLocation instead of UUID, and the id doubles as the
 	// modifier's name - there is no separate display string any more.
-	private static final Identifier FLEE_SPEED_MODIFIER_ID =
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "flee_speed_boost");
+	private static final ResourceLocation FLEE_SPEED_MODIFIER_ID =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "flee_speed_boost");
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
@@ -681,15 +681,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			// up with the state timers: appear is exactly 1 second, as is ERUPT_DURATION_TICKS,
 			// where previously the transition ate a quarter of the eruption.
 			if (lizardState == State.DIGGING_DOWN) {
-				controller.setTransitionTicks(STATE_TRANSITION_TICKS);
+				controller.transitionLength(STATE_TRANSITION_TICKS);
 				return test.setAndContinue(BURROW_ANIM);
 			}
 			if (lizardState == State.ERUPTING) {
-				controller.setTransitionTicks(STATE_TRANSITION_TICKS);
+				controller.transitionLength(STATE_TRANSITION_TICKS);
 				return test.setAndContinue(APPEAR_ANIM);
 			}
 
-			controller.setTransitionTicks(MOVEMENT_TRANSITION_TICKS);
+			controller.transitionLength(MOVEMENT_TRANSITION_TICKS);
 			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
 			// mobs use for their walk cycle; in GeckoLib 5 it reads the IS_MOVING render-state entry
 			// GeoEntityRenderer fills from walkAnimation.speed()) rather than our own isFleeing()

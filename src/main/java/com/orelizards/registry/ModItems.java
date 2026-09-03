@@ -5,7 +5,7 @@ import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.SpawnEggItem;
 
@@ -15,7 +15,7 @@ public final class ModItems {
 	// since 1.21.4 that key also names the item model definition the client loads:
 	// assets/orelizards/items/ore_lizard_spawn_egg.json.
 	private static final ResourceKey<Item> ORE_LIZARD_SPAWN_EGG_KEY = ResourceKey.create(Registries.ITEM,
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard_spawn_egg"));
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard_spawn_egg"));
 
 	// The egg's colours - stone-grey body 0x6E6E6E with a bright crystal highlight 0x63E1FF, matching
 	// the mob's own read - are no longer constructor arguments. 1.21.4 moved spawn egg tinting out of

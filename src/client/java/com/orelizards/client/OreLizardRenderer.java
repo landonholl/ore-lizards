@@ -19,7 +19,7 @@ public class OreLizardRenderer<R extends LivingEntityRenderState & GeoRenderStat
 	public OreLizardRenderer(EntityRendererProvider.Context context) {
 		super(context, new OreLizardModel());
 		this.shadowRadius = 0.5F;
-		// GeckoLib 5.4 renamed addRenderLayer to the chainable withRenderLayer.
+		// GeckoLib 5.3+ names the layer registrar withRenderLayer (chainable); 5.1 called it addRenderLayer.
 		this.withRenderLayer(new OreTintLayer<>(this));
 	}
 }

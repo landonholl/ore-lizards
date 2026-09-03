@@ -6,7 +6,7 @@ import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 
@@ -15,7 +15,7 @@ public final class ModEntities {
 	// id string) and derives the description id, the default loot table and the DataFixer schema
 	// lookup from it, so the lang key and /summon id stay entity.orelizards.ore_lizard as before.
 	private static final ResourceKey<EntityType<?>> ORE_LIZARD_KEY = ResourceKey.create(Registries.ENTITY_TYPE,
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard"));
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard"));
 
 	public static final EntityType<OreLizardEntity> ORE_LIZARD = Registry.register(
 			BuiltInRegistries.ENTITY_TYPE,

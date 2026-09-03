@@ -2,21 +2,20 @@ package com.orelizards.client;
 
 import com.orelizards.OreLizardsMod;
 import com.orelizards.entity.OreLizardEntity;
-import net.minecraft.resources.Identifier;
-import org.jetbrains.annotations.Nullable;
+import net.minecraft.resources.ResourceLocation;
 import software.bernie.geckolib.constant.dataticket.DataTicket;
 import software.bernie.geckolib.model.GeoModel;
 import software.bernie.geckolib.renderer.base.GeoRenderState;
 
 public class OreLizardModel extends GeoModel<OreLizardEntity> {
-	private static final Identifier MODEL =
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "geo/entity/ore_lizard.geo.json");
-	private static final Identifier TEXTURE =
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard.png");
-	private static final Identifier TEXTURE_DEEPSLATE =
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard_deepslate.png");
-	private static final Identifier ANIMATIONS =
-			Identifier.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "animations/entity/ore_lizard.animation.json");
+	private static final ResourceLocation MODEL =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "geo/entity/ore_lizard.geo.json");
+	private static final ResourceLocation TEXTURE =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard.png");
+	private static final ResourceLocation TEXTURE_DEEPSLATE =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard_deepslate.png");
+	private static final ResourceLocation ANIMATIONS =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "animations/entity/ore_lizard.animation.json");
 
 	/**
 	 * Which of the two skins this lizard wears, carried in the render state. GeckoLib 5 resolves the
@@ -29,28 +28,28 @@ public class OreLizardModel extends GeoModel<OreLizardEntity> {
 	private static final DataTicket<Boolean> DEEPSLATE = DataTicket.create("orelizards:deepslate", Boolean.class);
 
 	@Override
-	public Identifier getModelResource(GeoRenderState renderState) {
+	public ResourceLocation getModelResource(GeoRenderState renderState) {
 		return MODEL;
 	}
 
 	@Override
-	public Identifier getTextureResource(GeoRenderState renderState) {
-		// getOrDefault rather than get: get() throws if the key was never added, and the stone skin is
-		// the right answer for a state nothing has filled in yet.
+	public ResourceLocation getTextureResource(GeoRenderState renderState) {
+		// getOrDefault rather than get: the stone skin is the right answer for a state nothing has
+		// filled in yet, and get() is not to be trusted with a missing key across GeckoLib versions.
 		return renderState.getOrDefaultGeckolibData(DEEPSLATE, false) ? TEXTURE_DEEPSLATE : TEXTURE;
 	}
 
 	// Still takes the entity: animation lookup happens on the extraction side, where the entity is
 	// available, and the same file serves every lizard anyway.
 	@Override
-	public Identifier getAnimationResource(OreLizardEntity animatable) {
+	public ResourceLocation getAnimationResource(OreLizardEntity animatable) {
 		return ANIMATIONS;
 	}
 
-	// The middle argument is GeckoLib 5.4's "related object" (an ItemStack for item renderers, the
-	// entity for replaced-entity renderers); it is always null for a plain entity renderer.
+	// Two arguments on GeckoLib 5.3 (5.4 inserted a "related object" in the middle, which is always
+	// null for a plain entity renderer anyway).
 	@Override
-	public void addAdditionalStateData(OreLizardEntity animatable, @Nullable Object relatedObject, GeoRenderState renderState) {
+	public void addAdditionalStateData(OreLizardEntity animatable, GeoRenderState renderState) {
 		renderState.addGeckolibData(DEEPSLATE, animatable.isDeepslate());
 	}
 }
