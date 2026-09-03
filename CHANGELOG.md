@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.2.0+mc1.21.4
+
+A port of 1.2.0 to Minecraft 1.21.4 (Fabric Loader 0.19.5, Fabric API 0.119.4, GeckoLib 4.8.5,
+Java 21), built on top of the 1.21.1 port below. The mob is meant to behave exactly as it does on
+1.20.1. Everything the `## 1.2.0+mc1.21.1` section lists still applies here unchanged - step height as
+the `STEP_HEIGHT` attribute, the `ResourceLocation`-keyed flee modifier, the packed-int tint colours,
+vanilla's `EntityType.Builder`, `SpawnPlacements.register` through Fabric's access widener, and no
+`mclib` jar (GeckoLib 4.8.5 for 1.21.4 has no `META-INF/jars/` either) - and is not repeated. Below is
+only what 1.21.2 through 1.21.4 forced on top of that. Plain API renames (`MobSpawnType` →
+`EntitySpawnReason`, `EntityType.Builder.build` taking the registry key, `spawnAtLocation` taking the
+level, GeckoLib's `GeoModel` getters taking the renderer and its layer hooks growing a trailing
+`renderColor` argument) are not listed.
+
+### Changed
+
+- **"Iron or better pickaxe" is now "a pickaxe that could drop diamond ore".** 1.21.2 removed
+  `Tier`/`Tiers`, so the identity comparison against `IRON`/`DIAMOND`/`NETHERITE` has nothing left to
+  compare. Its replacement, `ToolMaterial`, carries no rank; what it carries is the tag of blocks the
+  tool is *not* good enough to harvest, baked into the stack's `TOOL` component. The armour bypass
+  therefore asks `ItemStack.isCorrectToolForDrops(DIAMOND_ORE)`: diamond ore needs an iron tool, so
+  wood, stone and gold picks fail it and iron, diamond and netherite pass, which is exactly the set the
+  tier check accepted. `instanceof PickaxeItem` is still the "is it a pickaxe" half, as before. The one
+  place this can differ from 1.20.1 is a modded pickaxe with its own material: previously it never
+  qualified (it wasn't one of the three vanilla tiers), now it qualifies if its material can mine
+  diamond ore - which is arguably what the rule always meant.
+- **Damage handling moved from `hurt` to `hurtServer`.** 1.21.2 made `Entity.hurt` final and split it
+  into a client/server dispatcher; `hurtServer(ServerLevel, DamageSource, float)` is the half with the
+  logic, and is what the creative/spectator rejection, the dormant panic and the pickaxe armour bypass
+  now override. Same behaviour - `LivingEntity.hurt` already returned false on the client before doing
+  anything, so nothing that used to run client-side has been lost.
+- **The spawn egg's colours live in an item model definition instead of on the item.** 1.21.4
+  introduced `assets/<namespace>/items/<id>.json` as the thing that decides how an item renders, and
+  moved spawn egg tinting there: `SpawnEggItem` no longer takes colours at all, and vanilla's own eggs
+  are `minecraft:model` definitions carrying two `minecraft:constant` tints. Ours is written the same
+  way, pointing at the existing `models/item/ore_lizard_spawn_egg.json` (parent `template_spawn_egg`)
+  with the same `0x6E6E6E` body and `0x63E1FF` highlight as before, as the signed ARGB ints vanilla
+  uses. Without that file the egg would render as the missing-model placeholder, so it is load-bearing.
+  Every item also now has to be handed its registry key through `Item.Properties.setId` before
+  construction (1.21.2+; the constructor throws "Item id not set" without it), which is also how the
+  client finds that definition.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 1.21.4 + GeckoLib 4.8.5 and
+  smoke-tested on a headless dedicated server only. GeckoLib 4.8.5's layer hooks (`renderForBone`,
+  `render`) still hand the layer the entity itself and still run in the same order as 4.8.4/4.9.2, so
+  the three-pass tint/emissive structure and the deferred `RenderType.eyes` draw are ported unchanged -
+  but the tint pass, the emissive pass, the buried-lizard invisibility skip, the `appear`/`burrow`
+  transition timing and the tinted egg icon all want a look in a client before release. One detail
+  specific to 1.21.4: `PoseStack.Pose` gained a `trustedNormals` flag, and the pose `OreTintLayer`
+  pushes for the emissive draw inherits it from the current stack top rather than from the captured
+  bone pose. It only governs whether normals are re-normalised, and the emissive pass goes through
+  `rendertype_eyes`, which does no lighting, so it should be invisible - but it is untested.
+
 ## 1.2.0+mc1.21.1
 
 A port of 1.2.0 to Minecraft 1.21.1 (Fabric Loader 0.19.5, Fabric API 0.116.17, GeckoLib 4.9.2,

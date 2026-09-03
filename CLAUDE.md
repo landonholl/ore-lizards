@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.21.1 (Java 21, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.21.4 (Java 21, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.9.2 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.8.5 drives its model/animations.
 
-This branch (`1.21.1`) is a port of the 1.20.1 original on `main`; behaviour is meant to be
-identical, and the `## 1.2.0+mc1.21.1` section of [CHANGELOG.md](CHANGELOG.md) lists every place
-the port had to differ and why. When in doubt about *what the mob should do*, `main` is the source
-of truth.
+This branch (`1.21.4`) is a port of the 1.20.1 original on `main`, built on top of the `1.21.1` port
+branch; behaviour is meant to be identical, and the `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1`
+sections of [CHANGELOG.md](CHANGELOG.md) together list every place the port had to differ and why.
+When in doubt about *what the mob should do*, `main` is the source of truth.
 
 ## Commands
 
@@ -104,6 +104,14 @@ means adding an enum constant — no new textures, no renderer changes. Drop cou
 nested `DropTier` (bulk ores 4-6; gold/diamond/emerald 2-4 with a 2% roll for 6), so a new variant
 just names its tier.
 
+The spawn egg's two colours are **not in Java**. 1.21.4's item model definitions moved spawn egg
+tinting out of `SpawnEggItem` and into
+[items/ore_lizard_spawn_egg.json](src/main/resources/assets/orelizards/items/ore_lizard_spawn_egg.json),
+which points at the old `models/item/ore_lizard_spawn_egg.json` and supplies the body/highlight as
+two `minecraft:constant` tints (signed ARGB ints, the way vanilla's own egg definitions are written).
+Delete or misname that file and the egg renders as the missing-model placeholder; the item's registry
+key (`Item.Properties.setId`) is what the client uses to find it.
+
 The `shards` and `eyes` bones get a third, emissive pass through `RenderType.eyes` (vanilla's
 enderman/spider eye overlay type — coincidental name clash with our own `eyes` bone): fullbright and additive in vanilla, and mapped to `gbuffers_spidereyes` by
 Iris/OptiFine so shader packs treat it as emissive. Deliberately *not* GeckoLib's
@@ -172,10 +180,10 @@ API dependency thinking the mod only uses it for biome spawns.
 
 - There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
   because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
-  GeckoLib 4.9.2 has no `META-INF/jars/` at all and no mclib references, so the workaround was
-  dropped along with its `implementation files(...)` line. If a future GeckoLib bump brings a nested
-  jar back, `runClient`/`runServer` will fail with `NoClassDefFoundError` and the fix is the same
-  extract-and-reference dance described on `main`.
+  GeckoLib 4.8.5 for 1.21.4 (like 4.9.2 for 1.21.1) has no `META-INF/jars/` at all and no mclib
+  references, so the workaround was dropped along with its `implementation files(...)` line. If a
+  future GeckoLib bump brings a nested jar back, `runClient`/`runServer` will fail with
+  `NoClassDefFoundError` and the fix is the same extract-and-reference dance described on `main`.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
@@ -184,9 +192,37 @@ API dependency thinking the mod only uses it for biome spawns.
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
 
-## 1.21.1-specific API notes
+## 1.21.4-specific API notes
 
-Things that bit during the port and will bite again on any further bump:
+Things that bit during the port (1.21.1 first, then 1.21.4 on top) and will bite again on any further
+bump. The 1.21.2–1.21.4 additions first:
+
+- **`Entity.hurt` is final.** Override `hurtServer(ServerLevel, DamageSource, float)` instead — it is
+  the server half of the dispatcher and the only place damage logic runs. `hurtClient` exists but is
+  not ours to touch.
+- **`Tier`/`Tiers` are gone; `PickaxeItem` is not (yet).** "Iron or better" is
+  `stack.isCorrectToolForDrops(Blocks.DIAMOND_ORE.defaultBlockState())`, which reads the stack's `TOOL`
+  component. 1.21.5 removes `PickaxeItem` too — the `instanceof` half becomes `stack.is(ItemTags.PICKAXES)`.
+- **`SpawnEggItem(EntityType, Item.Properties)` — no colours** — and every `Item.Properties` needs
+  `.setId(ResourceKey<Item>)` or the `Item` constructor throws. Colours go in the item model definition
+  (see *Variants and rendering*). `EntityType.Builder.build` likewise takes the
+  `ResourceKey<EntityType<?>>`, not a string.
+- **`MobSpawnType` is `EntitySpawnReason`** (in `canSpawn`, `finalizeSpawn` and
+  `SpawnPlacements.SpawnPredicate`). `spawnAtLocation` needs the `ServerLevel`, which
+  `dropCustomDeathLoot` already receives.
+- **GeckoLib 4.8.5 (1.21.4): `GeoModel.getModelResource`/`getTextureResource` take
+  `(T, GeoRenderer<T>)`**; `getAnimationResource(T)` does not. Every `GeoRenderLayer` hook
+  (`preRender`, `renderForBone`, `render`) grew a trailing `int renderColor` — the renderer's own
+  packed ARGB from `getRenderColor(...).argbInt()`. `OreTintLayer` ignores it on purpose (the variant
+  tint is meant to multiply the texture as written). The hooks still receive the entity itself, not a
+  render state, and `renderCubesOfBone(PoseStack, GeoBone, VertexConsumer, int, int, int)` is
+  unchanged, so the deferred emissive pass ported as-is.
+- **`PoseStack.Pose` has a `trustedNormals` flag** with no setter. `pushPose()` copies it from the
+  current top, and `OreTintLayer` then overwrites `pose()`/`normal()` in place, so the emissive draw's
+  normals may be re-normalised (or not) according to the wrong pose. Harmless for `RenderType.eyes`,
+  which does no lighting; would matter for a lit pass.
+
+Carried over from the 1.21.1 port:
 
 - **Attribute modifiers are keyed by `ResourceLocation`, not `UUID`.** `AttributeModifier(id, amount,
   operation)` — no name string — and `AttributeInstance.hasModifier/getModifier/removeModifier` take
@@ -197,14 +233,11 @@ Things that bit during the port and will bite again on any further bump:
 - **`defineSynchedData` takes a `SynchedEntityData.Builder`**; define on the builder, not on
   `this.entityData`. `finalizeSpawn` lost its trailing `CompoundTag`; `dropCustomDeathLoot` is
   `(ServerLevel, DamageSource, boolean)` — the looting multiplier is gone.
-- **GeckoLib 4.9's `renderCubesOfBone` takes one packed ARGB `int`**, not four floats — the same form
+- **GeckoLib 4.5+'s `renderCubesOfBone` takes one packed ARGB `int`**, not four floats — the same form
   `VertexConsumer.setColor(int)` eats. Forget the alpha byte and the bone renders fully transparent.
   `OreTintLayer` has `opaque()`/`scaleRgb()` helpers for this; use them rather than hand-packing.
 - **GeckoLib's `core` package is gone.** `AnimatableInstanceCache` is under
   `software.bernie.geckolib.animatable.instance`; `AnimationController`, `AnimatableManager`,
   `RawAnimation`, `PlayState`, `AnimationState` are all directly under
-  `software.bernie.geckolib.animation`. Render-layer hook signatures (`renderForBone`, `render`) are
-  unchanged from 4.8, so the deferred emissive pass in `OreTintLayer` ported as-is.
+  `software.bernie.geckolib.animation`.
 - **`new ResourceLocation(ns, path)` is private** — use `ResourceLocation.fromNamespaceAndPath`.
-- `EntityType.Builder.build(String)` takes a bare id string that only feeds the DataFixer schema
-  lookup; description id and default loot table still derive from the registry key.

@@ -18,10 +18,10 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.SpawnGroupData;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
@@ -34,12 +34,11 @@ import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.PickaxeItem;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Tier;
-import net.minecraft.world.item.Tiers;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.ItemLike;
 import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
@@ -185,7 +184,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 				.add(Attributes.STEP_HEIGHT, MAX_UP_STEP);
 	}
 
-	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, MobSpawnType spawnType,
+	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, EntitySpawnReason spawnReason,
 			BlockPos pos, RandomSource random) {
 		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
 		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
@@ -271,13 +270,13 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	@Override
-	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType,
+	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, EntitySpawnReason spawnReason,
 			@Nullable SpawnGroupData spawnGroupData) {
 		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
 		this.setDeepslate(deepslate);
 		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
 		this.becomeDormant();
-		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData);
+		return super.finalizeSpawn(level, difficulty, spawnReason, spawnGroupData);
 	}
 
 	@Override
@@ -504,8 +503,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 				this.getX(), this.getY() + 0.5, this.getZ(), 20, 0.3, 0.3, 0.3, 0.05);
 	}
 
+	// 1.21.2 split Entity.hurt into a final dispatcher and a server-only hurtServer, which is the half
+	// that carries the damage logic - so this is the same override it always was, minus the client-side
+	// early return LivingEntity.hurt used to do for us (the dispatcher now handles that).
 	@Override
-	public boolean hurt(DamageSource source, float amount) {
+	public boolean hurtServer(ServerLevel level, DamageSource source, float amount) {
 		if (source.getEntity() instanceof Player player && (player.isCreative() || player.isSpectator())) {
 			return false;
 		}
@@ -517,12 +519,12 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			double toughnessBase = toughness != null ? toughness.getBaseValue() : 0;
 			if (armor != null) armor.setBaseValue(0);
 			if (toughness != null) toughness.setBaseValue(0);
-			boolean result = super.hurt(source, amount);
+			boolean result = super.hurtServer(level, source, amount);
 			if (armor != null) armor.setBaseValue(armorBase);
 			if (toughness != null) toughness.setBaseValue(toughnessBase);
 			return result;
 		}
-		return super.hurt(source, amount);
+		return super.hurtServer(level, source, amount);
 	}
 
 	@Override
@@ -615,11 +617,16 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return false;
 		}
 		ItemStack weapon = player.getMainHandItem();
-		if (!(weapon.getItem() instanceof PickaxeItem pickaxe)) {
+		if (!(weapon.getItem() instanceof PickaxeItem)) {
 			return false;
 		}
-		Tier tier = pickaxe.getTier();
-		return tier == Tiers.IRON || tier == Tiers.DIAMOND || tier == Tiers.NETHERITE;
+		// "Iron or better" used to be a Tier identity check (IRON, DIAMOND or NETHERITE). 1.21.2
+		// replaced Tier/Tiers with ToolMaterial, which has no comparable identity - what it carries is
+		// the tag of blocks the tool is *not* good enough to harvest, folded into the stack's TOOL
+		// component. So the question is asked the way the game itself asks it: could this pickaxe drop
+		// diamond ore? Diamond ore needs an iron tool, so wood, stone and gold picks fail it and iron,
+		// diamond and netherite pass - exactly the set the tier comparison accepted.
+		return weapon.isCorrectToolForDrops(Blocks.DIAMOND_ORE.defaultBlockState());
 	}
 
 	// 1.21 dropped the looting-multiplier argument (looting is applied through the enchantment system
@@ -632,7 +639,7 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		}
 		OreVariant variant = this.getOreVariant();
 		ItemLike dropItem = variant.getDropItem();
-		this.spawnAtLocation(new ItemStack(dropItem, variant.rollDropCount(this.random)));
+		this.spawnAtLocation(level, new ItemStack(dropItem, variant.rollDropCount(this.random)));
 	}
 
 	@Override

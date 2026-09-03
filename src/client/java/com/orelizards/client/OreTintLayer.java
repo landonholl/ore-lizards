@@ -61,9 +61,14 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 		super(renderer);
 	}
 
+	// The trailing renderColor on both hooks is new with GeckoLib 4.8 on 1.21.4: the renderer's own
+	// packed ARGB colour for the base pass (getRenderColor, opaque white for this entity). It is
+	// deliberately not folded into the tint - the variant colour is meant to multiply the texture as
+	// written, and the 1.20.1 original never modulated it by the base colour either.
 	@Override
 	public void renderForBone(PoseStack poseStack, OreLizardEntity animatable, GeoBone bone, RenderType renderType,
-			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay) {
+			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay,
+			int renderColor) {
 		int slot = GLOWING_BONES.indexOf(bone.getName());
 		if (slot < 0) {
 			return;
@@ -82,7 +87,8 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 
 	@Override
 	public void render(PoseStack poseStack, OreLizardEntity animatable, BakedGeoModel bakedModel, RenderType renderType,
-			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay) {
+			MultiBufferSource bufferSource, VertexConsumer buffer, float partialTick, int packedLight, int packedOverlay,
+			int renderColor) {
 		// A dormant lizard is meant to be undetectable, and a glow is exactly the thing that would
 		// give it away. GeckoLib already skips the whole render for an invisible entity, so this is
 		// belt-and-braces - but it's the one case where getting it wrong breaks the core mechanic.

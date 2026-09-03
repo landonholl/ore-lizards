@@ -4,14 +4,22 @@ import com.orelizards.OreLizardsMod;
 import com.orelizards.entity.OreLizardEntity;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 
 public final class ModEntities {
+	// 1.21.2+ wants the registry key up front: EntityType.Builder.build takes it (rather than a bare
+	// id string) and derives the description id, the default loot table and the DataFixer schema
+	// lookup from it, so the lang key and /summon id stay entity.orelizards.ore_lizard as before.
+	private static final ResourceKey<EntityType<?>> ORE_LIZARD_KEY = ResourceKey.create(Registries.ENTITY_TYPE,
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard"));
+
 	public static final EntityType<OreLizardEntity> ORE_LIZARD = Registry.register(
 			BuiltInRegistries.ENTITY_TYPE,
-			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard"),
+			ORE_LIZARD_KEY,
 			// AMBIENT (not CREATURE) - matches the vanilla Bat, the closest real precedent for a
 			// rare cave-dwelling critter. CREATURE shares one population cap with every animal on
 			// the surface (cows/pigs/sheep/etc.), which is almost always already full by the time
@@ -20,13 +28,11 @@ public final class ModEntities {
 			//
 			// Vanilla's own builder rather than Fabric's FabricEntityTypeBuilder, which is deprecated
 			// on 1.21. sized() is the scalable-dimensions case EntityDimensions.scalable used to spell
-			// out, and the string handed to build() is only ever used to look the type up in the
-			// DataFixer schema - the description id and loot table both still derive from the
-			// registry key.
+			// out.
 			EntityType.Builder.of(OreLizardEntity::new, MobCategory.AMBIENT)
 					.sized(0.9F, 0.6F)
 					.clientTrackingRange(8)
-					.build("ore_lizard"));
+					.build(ORE_LIZARD_KEY));
 
 	private ModEntities() {
 	}
