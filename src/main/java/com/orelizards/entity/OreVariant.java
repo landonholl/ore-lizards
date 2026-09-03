@@ -3,6 +3,7 @@ package com.orelizards.entity;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * <p>Tint colors are measured, not eyeballed: each one is the mean of every pixel in that mineral's
@@ -97,6 +98,21 @@ public enum OreVariant {
 	 */
 	public int rollDropCount(RandomSource random) {
 		return this.dropTier.rollCount(random);
+	}
+
+	/**
+	 * Looks a variant up by its {@link #name()}, for reading one back out of saved NBT. Returns
+	 * {@code null} for anything unrecognised, which is what a world saved by a later version of the
+	 * mod - one that has since had a variant renamed or removed - would hand back.
+	 */
+	@Nullable
+	public static OreVariant byName(String name) {
+		for (OreVariant variant : values()) {
+			if (variant.name().equals(name)) {
+				return variant;
+			}
+		}
+		return null;
 	}
 
 	/**

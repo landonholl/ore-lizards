@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.2.0
+
+A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it
+spawned as now survives a chunk unload, and a dormant one is no longer something the game can quietly
+delete or push into its escape sequence on its own.
+
+### Fixed
+
+- **A lizard's ore variant and stone/deepslate skin were never saved.** `OreVariant` and `Deepslate`
+  are tracked entity data, which is synced to clients but not written to disk, and nothing wrote them
+  to NBT. Both therefore reverted to whatever `defineSynchedData` declares as the default the first
+  time the lizard's chunk unloaded and came back - which is to say every deepslate diamond lizard
+  silently became a stone coal lizard as soon as a player walked out of range and returned, texture,
+  tint, dig sounds and drops all included. Both are now saved and restored. The variant is written by
+  name rather than by ordinal, so reordering the enum or inserting a variant into the middle of it
+  doesn't rewrite the ore in every already-saved world. A lizard saved before this release has
+  nothing recorded and keeps the default rather than being re-rolled, on the grounds that changing
+  the ore of a lizard a player has already found is worse than one legacy lizard reading as coal.
+- **Environmental damage sent a dormant lizard into a flee it could not perform.** Any damage while
+  buried triggered the panic response, but the flee target was only set when the damage came from a
+  living entity. Lava, a falling block or a stray tick of AoE therefore left it FLEEING with a null
+  target, and `FleeAndBurrowGoal` needs a target to measure distance from, so it never activated: the
+  lizard stood visible and completely motionless in the open for the full 13 seconds, then burrowed
+  and deleted itself. Damage with no attacker behind it now looks for the nearest player within 16
+  blocks - the pathfinder's own `FOLLOW_RANGE`, past which there is nothing it could meaningfully run
+  from - and if there is nobody there it stays in the rock and takes the damage.
+- **A flee whose target disappeared ran to full length.** Killing, logging out or changing dimension
+  during the 13 seconds left the same untargeted flee, with the same motionless lizard. Both
+  ERUPTING and FLEEING now check that there is still something to run from, and burrow immediately
+  when there isn't.
+
+### Changed
+
+- **Dormant and activated lizards now despawn by different rules, and neither of them rolls dice.**
+  A buried lizard is the entire premise of the mob, so within 128 blocks of any player it does not
+  despawn at all - previously it was rolling 1-in-10 every 5 seconds past 48 blocks, which meant a
+  rare find could evaporate out of the floor of a cave a player was still working through. 128 is the
+  entity's own tracking range, so beyond it the lizard isn't even being sent to a client; nobody can
+  encounter it there, and leaving it in place only holds a slot in the AMBIENT population cap that a
+  lizard nearer the player could be using, so past that radius it is now removed outright instead of
+  waiting on a roll. The rule that nothing despawns while the nearest player is still underground is
+  unchanged and still applies first. An **activated** lizard - erupting, fleeing or digging down -
+  never despawns under any circumstance. It has already been seen, and it discards itself at the end
+  of `DIGGING_DOWN` anyway, so the only thing a despawn could do there is delete it mid-run in front
+  of the player who startled it.
+- **Loading a chunk always returns a lizard to dormancy.** The state machine is deliberately left out
+  of NBT. Its flee target is a live entity reference that can't survive a save in the first place, so
+  the honest alternative is reloading mid-flee with nothing to run from. Coming back buried is both
+  the better failure mode and the better fiction - it went back into the rock while nobody was loaded
+  to watch it. It also makes the guarantee absolute: nothing but a genuine activation can put a
+  lizard onto the burrow-and-discard path.
+- **Every state transition now goes through one method each.** `beginErupting`, `beginFleeing`,
+  `beginDiggingDown` and `becomeDormant` replace four copies of the same timer/attribute/visibility
+  bookkeeping spread across the tick methods and the damage handler - two of which had already
+  drifted apart. Both routes out of dormancy take the entity being fled from as a parameter, so
+  "activated" and "has something to flee from" are the same thing by construction rather than by
+  remembering to set a field.
+
 ## 1.1.0
 
 A visibility and movement pass. 1.0.0 made the lizard possible to find; this release makes it

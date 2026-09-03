@@ -5,6 +5,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -69,6 +70,16 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final EntityDataAccessor<Integer> STATE =
 			SynchedEntityData.defineId(OreLizardEntity.class, EntityDataSerializers.INT);
 
+	// Save keys for the two pieces of tracked data that are decided once, at spawn, and can't be
+	// re-derived afterwards. Without these a lizard whose chunk unloaded came back as whatever
+	// defineSynchedData defaults to - a stone coal lizard - regardless of what it spawned as, so a
+	// deepslate diamond one silently downgraded itself the first time a player walked out of range.
+	// The variant is written by name rather than by ordinal so that reordering the enum, or
+	// inserting a variant into the middle of it, doesn't rewrite the ore in every saved world.
+	// State deliberately isn't saved - see readAdditionalSaveData.
+	private static final String TAG_ORE_VARIANT = "OreVariant";
+	private static final String TAG_DEEPSLATE = "Deepslate";
+
 	private static final UUID FLEE_SPEED_MODIFIER_ID = UUID.fromString("6f6a1f0a-6b6a-4e2b-9b8c-6f2e3a9d1a10");
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
@@ -105,13 +116,19 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// Despawn tuning. Vanilla re-evaluates despawning every single tick per mob; we only bother
 	// every 5 seconds, and even then bail out early on the cheap checks.
 	private static final int DESPAWN_CHECK_INTERVAL = 100;
-	private static final double NO_DESPAWN_RADIUS = 48.0;
-	private static final double NO_DESPAWN_RADIUS_SQ = NO_DESPAWN_RADIUS * NO_DESPAWN_RADIUS;
-	// Vanilla rolls 1-in-800 per tick; we roll 1-in-10 per 5s check, and only once the player has
-	// actually surfaced, which makes these far stickier than an ordinary mob.
-	private static final int DESPAWN_ROLL = 10;
+	// How far away the nearest player has to be before a dormant lizard is written off. 128 blocks
+	// is this entity's own tracking range (trackRangeChunks(8) in ModEntities), so beyond it the
+	// lizard isn't even being sent to a client - nobody can encounter it, and leaving it there only
+	// holds a slot in the AMBIENT population cap that would otherwise let one spawn in the cave a
+	// player is actually exploring. Inside that radius a dormant lizard never despawns at all.
+	private static final double DORMANT_DESPAWN_RADIUS = 128.0;
+	private static final double DORMANT_DESPAWN_RADIUS_SQ = DORMANT_DESPAWN_RADIUS * DORMANT_DESPAWN_RADIUS;
 
 	private static final double TRIGGER_RANGE = 5.0;
+	// Fallback search radius for something to flee from when the damage that woke the lizard had no
+	// attacker behind it - lava, a falling anvil, a cactus. Matched to the pathfinder's FOLLOW_RANGE,
+	// since the flee sweep can't meaningfully run away from anything further off than that anyway.
+	private static final double PANIC_TARGET_SEARCH_RANGE = 16.0;
 	// Matches the 1-second length of the "appear" animation so it isn't cut off mid-play by the
 	// transition into FLEEING.
 	private static final int ERUPT_DURATION_TICKS = 20;
@@ -120,6 +137,8 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// blocks underground, so the extra ticks are out of sight and just leave the lizard hittable
 	// for a moment longer while it escapes.
 	private static final int DIG_DURATION_TICKS = 30;
+	// 2.5x flee speed reduced by 23% (per feedback that it was too fast to react to): 2.5 * 0.77 = 1.925x.
+	private static final double FLEE_SPEED_BONUS = 0.925;
 
 	// A light spark trail so a lizard you've startled stays trackable across a dark cave instead of
 	// vanishing the moment it rounds a corner. One particle every few ticks is enough to follow -
@@ -188,16 +207,34 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	/**
-	 * Ore Lizards are meant to be a rare find, so a player who surfaces for a moment shouldn't
-	 * come back to an emptied-out cave system. Two differences from vanilla despawning:
-	 * they never despawn while the nearest player is still underground, and this only evaluates
-	 * every {@value #DESPAWN_CHECK_INTERVAL} ticks instead of vanilla's every-tick check - the
-	 * expensive heightmap lookup sits behind both a tick gate and a distance gate, so on the
-	 * common path this does less work than the vanilla implementation it replaces.
+	 * Ore Lizards are meant to be a rare find, so a player who surfaces for a moment shouldn't come
+	 * back to an emptied-out cave system. Despawning is therefore split by state, and nothing like
+	 * vanilla's roll:
+	 *
+	 * <ul>
+	 *   <li><b>Dormant.</b> Never despawns while any player is within
+	 *       {@value #DORMANT_DESPAWN_RADIUS} blocks, and never while the nearest player is still
+	 *       underground - a buried lizard is the whole point of the mob, and one vanishing out of
+	 *       the floor of a cave someone is exploring is indistinguishable from it never having
+	 *       spawned. Past that radius it is outside its own tracking range and cannot be found by
+	 *       anyone, so it is removed outright rather than left holding a slot in the shared AMBIENT
+	 *       population cap that a lizard nearer the player could be using.</li>
+	 *   <li><b>Activated.</b> Never despawns at all. It has already been seen, it is in the middle
+	 *       of a scripted eruption/flee/burrow run, and it discards itself at the end of
+	 *       {@link State#DIGGING_DOWN} anyway. Deleting it partway through is the one removal that
+	 *       reads as the mob glitching out rather than as ordinary mob cleanup.</li>
+	 * </ul>
+	 *
+	 * <p>This also only evaluates every {@value #DESPAWN_CHECK_INTERVAL} ticks instead of vanilla's
+	 * every-tick check, with the expensive heightmap lookup behind both a tick gate and a distance
+	 * gate, so on the common path it does less work than the implementation it replaces.
 	 */
 	@Override
 	public void checkDespawn() {
 		if (this.isPersistenceRequired() || this.requiresCustomPersistence()) {
+			return;
+		}
+		if (this.getLizardState() != State.BURIED) {
 			return;
 		}
 		if (this.tickCount % DESPAWN_CHECK_INTERVAL != 0) {
@@ -205,20 +242,19 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		}
 
 		Player player = this.level().getNearestPlayer(this, -1.0);
+		// No players in this dimension at all: nobody to preserve it for, but nobody to notice it
+		// go either, and in practice its chunk isn't loaded to tick this. Leave it be.
 		if (player == null) {
-			super.checkDespawn();
 			return;
 		}
-		if (player.distanceToSqr(this) < NO_DESPAWN_RADIUS_SQ) {
+		if (player.distanceToSqr(this) < DORMANT_DESPAWN_RADIUS_SQ) {
 			return;
 		}
 		if (isUnderground(this.level(), player.blockPosition())) {
 			return;
 		}
 
-		if (this.random.nextInt(DESPAWN_ROLL) == 0) {
-			this.discard();
-		}
+		this.discard();
 	}
 
 	@Override
@@ -235,8 +271,42 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
 		this.setDeepslate(deepslate);
 		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
-		this.setInvisible(true);
+		this.becomeDormant();
 		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData, dataTag);
+	}
+
+	@Override
+	public void addAdditionalSaveData(CompoundTag tag) {
+		super.addAdditionalSaveData(tag);
+		tag.putString(TAG_ORE_VARIANT, this.getOreVariant().name());
+		tag.putBoolean(TAG_DEEPSLATE, this.isDeepslate());
+	}
+
+	/**
+	 * Restores the two spawn-time properties and puts the lizard back in the ground.
+	 *
+	 * <p>The state machine is deliberately <em>not</em> saved. Its flee target is a live entity
+	 * reference that can't survive a save in the first place, and the alternative - reloading
+	 * mid-flee with nothing to run from - is a lizard standing motionless in the open until its
+	 * timer expires and then burrowing away. Coming back dormant is both the better failure mode and
+	 * the better fiction: it went back into the rock while nobody was loaded to watch. It also means
+	 * loading a chunk can never, by itself, put a lizard into the burrow-and-discard path.
+	 *
+	 * <p>A lizard saved before these keys existed has no variant recorded, and keeps the
+	 * {@link #defineSynchedData} default rather than being re-rolled - re-rolling would change the
+	 * ore of an already-discovered lizard, which is worse than one legacy lizard reading as coal.
+	 */
+	@Override
+	public void readAdditionalSaveData(CompoundTag tag) {
+		super.readAdditionalSaveData(tag);
+		if (tag.contains(TAG_ORE_VARIANT, Tag.TAG_STRING)) {
+			OreVariant variant = OreVariant.byName(tag.getString(TAG_ORE_VARIANT));
+			if (variant != null) {
+				this.setOreVariant(variant);
+			}
+		}
+		this.setDeepslate(tag.getBoolean(TAG_DEEPSLATE));
+		this.becomeDormant();
 	}
 
 	public OreVariant getOreVariant() {
@@ -315,38 +385,35 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		Player nearest = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
 				EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		if (nearest != null) {
-			this.fleeTarget = nearest;
-			this.setLizardState(State.ERUPTING);
-			this.stateTimer = ERUPT_DURATION_TICKS;
-			this.setInvisible(false);
-			this.spawnBurstParticles();
+			this.beginErupting(nearest);
 		}
 	}
 
 	private void tickErupting() {
+		// Activation always supplies a real target, but a second is long enough for it to die or
+		// log out before the eruption finishes.
+		LivingEntity target = this.fleeTarget;
+		if (!this.isValidFleeTarget(target)) {
+			this.beginDiggingDown();
+			return;
+		}
 		this.stateTimer--;
 		if (this.stateTimer <= 0) {
-			this.setLizardState(State.FLEEING);
-			this.stateTimer = FLEE_DURATION_TICKS;
-			AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
-			if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
-				// 2.5x flee speed reduced by 23% (per feedback that it was too fast to react to): 2.5 * 0.77 = 1.925x
-				speed.addTransientModifier(new AttributeModifier(
-						FLEE_SPEED_MODIFIER_ID, "Flee speed boost", 0.925, AttributeModifier.Operation.MULTIPLY_TOTAL));
-			}
+			this.beginFleeing(target);
 		}
 	}
 
 	private void tickFleeing() {
+		// Nothing left to run from - the target died, disconnected, or changed dimension. The goal
+		// has no anchor to path away from at that point, so the lizard would stand in the open for
+		// the rest of the timer and only then burrow. Cut it short and go back into the ground.
+		if (!this.isValidFleeTarget(this.fleeTarget)) {
+			this.beginDiggingDown();
+			return;
+		}
 		this.stateTimer--;
 		if (this.stateTimer <= 0) {
-			this.setLizardState(State.DIGGING_DOWN);
-			this.stateTimer = DIG_DURATION_TICKS;
-			AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
-			if (speed != null) {
-				speed.removeModifier(FLEE_SPEED_MODIFIER_ID);
-			}
-			this.getNavigation().stop();
+			this.beginDiggingDown();
 		}
 	}
 
@@ -356,6 +423,69 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			this.spawnBurstParticles();
 			this.discard();
 		}
+	}
+
+	/**
+	 * Every route out of dormancy goes through here, and every one of them has to name something to
+	 * run away from. That is the invariant the rest of the state machine leans on: a lizard can only
+	 * reach the burrow-and-discard path by having been activated by a specific entity first, so
+	 * nothing incidental - a chunk load, a despawn check, a stray tick of environmental damage with
+	 * nobody around - can quietly consume one that no player ever saw.
+	 */
+	private void beginErupting(LivingEntity target) {
+		this.fleeTarget = target;
+		this.setLizardState(State.ERUPTING);
+		this.stateTimer = ERUPT_DURATION_TICKS;
+		this.setInvisible(false);
+		this.spawnBurstParticles();
+	}
+
+	private void beginFleeing(LivingEntity target) {
+		this.fleeTarget = target;
+		this.setLizardState(State.FLEEING);
+		this.stateTimer = FLEE_DURATION_TICKS;
+		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+		if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
+			speed.addTransientModifier(new AttributeModifier(
+					FLEE_SPEED_MODIFIER_ID, "Flee speed boost", FLEE_SPEED_BONUS,
+					AttributeModifier.Operation.MULTIPLY_TOTAL));
+		}
+	}
+
+	private void beginDiggingDown() {
+		this.fleeTarget = null;
+		this.setLizardState(State.DIGGING_DOWN);
+		this.stateTimer = DIG_DURATION_TICKS;
+		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+		if (speed != null) {
+			speed.removeModifier(FLEE_SPEED_MODIFIER_ID);
+		}
+		this.getNavigation().stop();
+	}
+
+	/**
+	 * Puts the lizard back into the floor: dormant, invisible, no target, no flee boost. Used at
+	 * spawn and on load, so both arrive at exactly the same resting state rather than at whatever
+	 * the tracked-data defaults happen to be.
+	 */
+	private void becomeDormant() {
+		this.fleeTarget = null;
+		this.setLizardState(State.BURIED);
+		this.stateTimer = 0;
+		this.setInvisible(true);
+		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+		if (speed != null) {
+			speed.removeModifier(FLEE_SPEED_MODIFIER_ID);
+		}
+	}
+
+	/**
+	 * Whether there is still a live thing in this world to run away from. Deliberately not a
+	 * distance check: outrunning the target is the whole point, so it stays valid however far the
+	 * lizard gets.
+	 */
+	private boolean isValidFleeTarget(@Nullable LivingEntity target) {
+		return target != null && target.isAlive() && target.level() == this.level();
 	}
 
 	private void spawnBurstParticles() {
@@ -442,8 +572,15 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 
 	/**
 	 * A real animal that gets hurt doesn't wait around to notice you're close - it bolts
-	 * immediately. Previously only proximity triggered the eruption/flee response, so a lizard
+	 * immediately, skipping the eruption rather than spending a second rising out of the ground
+	 * while something hits it. Previously only proximity triggered the flee response, so a lizard
 	 * struck by AoE damage (or found and hit while still buried) just sat there.
+	 *
+	 * <p>Damage with nobody behind it now leaves the lizard dormant. It used to flee from a null
+	 * target instead, which the flee goal cannot path away from: the lizard stood visible and
+	 * motionless in the open for the full {@value #FLEE_DURATION_TICKS} ticks, then burrowed and
+	 * deleted itself. A lizard taking environmental damage with no player in sight stays in the rock
+	 * and takes it.
 	 */
 	private void panicFromDamageIfDormant(DamageSource source) {
 		State current = this.getLizardState();
@@ -451,17 +588,19 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return;
 		}
 
-		if (source.getEntity() instanceof LivingEntity attacker) {
-			this.fleeTarget = attacker;
+		LivingEntity threat = source.getEntity() instanceof LivingEntity attacker ? attacker : null;
+		if (threat == null) {
+			// Environmental damage - lava, a falling block, a hit from something with no owner.
+			// There is usually still a player behind it, so run from the nearest one if there is any.
+			threat = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(),
+					PANIC_TARGET_SEARCH_RANGE, EntitySelector.NO_CREATIVE_OR_SPECTATOR);
 		}
+		if (!this.isValidFleeTarget(threat)) {
+			return;
+		}
+
 		this.setInvisible(false);
-		this.setLizardState(State.FLEEING);
-		this.stateTimer = FLEE_DURATION_TICKS;
-		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
-		if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
-			speed.addTransientModifier(new AttributeModifier(
-					FLEE_SPEED_MODIFIER_ID, "Flee speed boost", 0.925, AttributeModifier.Operation.MULTIPLY_TOTAL));
-		}
+		this.beginFleeing(threat);
 		this.spawnBurstParticles();
 	}
 
