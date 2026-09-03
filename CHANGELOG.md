@@ -2,40 +2,79 @@
 
 ## 1.1.0
 
+A visibility and movement pass. 1.0.0 made the lizard possible to find; this release makes it
+possible to follow once found — it glows, it trails sparks, and its emergence and burrow animations
+finally play from the right place — and it moves like something genuinely trying to get away.
+
+### Added
+
+- **Emissive ore shards and eyes.** They are the parts of the mob meant to catch your eye, but lit
+  normally against cave stone they were very easy to walk past. Both now get a second fullbright
+  pass on top of the variant tint, so they glow in the dark rather than merely being brightly
+  coloured. Drawn through `RenderType.eyes` — the same render type vanilla uses for enderman and
+  spider eye overlays — which is fullbright and additive in vanilla, and which Iris and OptiFine
+  route through their `gbuffers_spidereyes` program, so shader packs pick it up as a real emissive
+  surface. GeckoLib's own `AutoGlowingGeoLayer` was the alternative, but it builds a custom render
+  type shader packs have no convention for and needs a per-skin `_glowmask` texture, which would
+  have cost the per-variant tinting. Glow strength is scaled to 70% so the brighter ores keep their
+  hue instead of clipping to white; coal, being near-black, barely glows at all. Dormant lizards are
+  excluded — a glow would defeat the camouflage outright.
+- **A light spark trail while the lizard is out of the ground.** Vanilla's `firework` particle, one
+  every 3 ticks, emitted at mid-body height with no velocity so the sparks hang where the lizard was
+  and mark its actual path — the point is to still be able to follow it after it rounds a corner in
+  an unlit cave. Gated on the state machine (erupting, fleeing, digging down) rather than on whether
+  it is currently moving, so it doesn't cut out exactly when the mob is cornered or pathing round an
+  obstacle, which is when you are most likely to lose it. Never emitted while dormant, for the same
+  reason the glow isn't.
+
 ### Changed
 
-- **Ore tint colors re-derived from the actual block textures.** Every variant's tint is now the
-  mean of all pixels in that mineral's *solid block* texture from the client jar —
-  `coal_block.png`, `diamond_block.png` and so on — rather than hand-picked values. The solid block
-  rather than the ore block, since an ore block is mostly its stone matrix and averages out grey.
-  For the three metals that have one, the *raw* block is the source (`raw_iron_block`,
-  `raw_gold_block`, `raw_copper_block`), because raw metal is what those variants drop and it looks
-  nothing like the refined bar — raw iron is a tan-brown where an iron block is near-white.
-  Coal `2B2B2B`→`101010`, iron `B8B1AA`→`A6886B`, gold `FFED00`→`DEA92F`, redstone
-  `9C0D0D`→`B01905`, lapis `1A51B8`→`1F438C`, diamond `54BFD9`→`62EDE4`, emerald
-  `30A758`→`2ACB58`, copper `A75A2C`→`B0664D`. Copper is the one value that isn't a straight
-  mean: `raw_copper_block` is speckled with green oxidation — a third of its pixels sit at hues
-  of 46° to 161° — which pulled the mean to an olive-leaning `9A6A4F`, so it uses the mean of
-  just its copper-hued pixels instead. These reach the model close to unchanged: the tint
-  multiplies shard pixels averaging 229/255 and eye pixels averaging 252/255, so there is nothing
-  meaningful to compensate for.
-
+- **Flee destinations are now chosen deterministically: the furthest reachable spot from the
+  player.** The goal no longer asks `DefaultRandomPos.getPosAway` where to run. That draws ten
+  *random* samples and discards any failing its pathability filters, so in a cave the player has
+  opened up, the survivors are whatever the open corridor happens to offer — which made the choice
+  of destination effectively arbitrary. It now sweeps 16 directions, probing each from its outermost
+  ring inwards and stopping at the first standable column, then takes whichever puts the most
+  distance between the lizard and the player. Anything no further away than the lizard already is
+  gets rejected, so a direction that curls back towards the player can't win, and if nothing is
+  reachable it still falls back to the random flee rather than standing still.
+- **Flee scan distance capped at 12 blocks, to match what the pathfinder can actually deliver.** A
+  mob's A* only expands nodes within `FOLLOW_RANGE` (16, Manhattan) of itself and gives up after
+  `FOLLOW_RANGE * 16` = 256 nodes, so a target beyond that can never be reached — the search spends
+  its entire node budget and returns a partial path regardless. Aiming inside that horizon means
+  paths usually complete, which is cheaper and more predictable, and costs nothing in range because
+  the lizard repaths every 10 ticks from wherever it has reached and only covers about six blocks in
+  that time.
+- **Flee repathing is now floored at 4 ticks.** The goal deliberately repaths early whenever the
+  current path runs out, but a destination the navigator can't reach leaves `isDone()` true
+  permanently — which meant a full destination search every single tick for the rest of the flee.
+  The bug predates this release and was easy to miss, because it only fires when the lizard is
+  already failing to find a way out.
+- **`maxUpStep` raised from the default 0.6 to 1.0, so the lizard steps over one-block rises instead
+  of jumping them.** `MoveControl` only jumps when the next waypoint is higher than `maxUpStep`, so
+  every ledge in an uneven cave floor was costing it a jump, and each jump bled the momentum the
+  flee speed boost had just given it. 1.0 is the value vanilla gives horses and ravagers. The same
+  number feeds `WalkNodeEvaluator`, so its paths route over those rises as steps as well.
 - **Drop counts are now tiered by ore.** Coal, iron, redstone, lapis and copper drop 4-6; gold,
   diamond and emerald drop 2-4, with a 2% chance of paying out 6 instead. Previously everything
   dropped a flat 1-3. The split is on the reasoning that a cheap ore is only worth killing for if
   you get a proper handful, whereas a valuable one is worth killing for at any amount — so those pay
   out smaller with an occasional windfall. Expressed as a `DropTier` on `OreVariant`, so a new
   variant declares which tier it belongs to and nothing else changes.
-
-### Added
-
-- **A light spark trail while the lizard is out of the ground.** Vanilla's `firework` particle, one
-  every 3 ticks, emitted at mid-body height with no velocity so the sparks hang where the lizard
-  was and mark its actual path — the point is to still be able to follow it after it rounds a
-  corner in an unlit cave. Gated on the state machine (erupting, fleeing, digging down) rather than
-  on whether it's currently moving, so it doesn't cut out exactly when the mob is cornered or
-  pathing round an obstacle, which is when you're most likely to lose it. Never emitted while
-  dormant, for the same reason the glow isn't.
+- **Ore tint colors re-derived from the actual block textures.** Every variant's tint is now the
+  mean of all pixels in that mineral's solid block texture from the client jar, rather than
+  hand-picked values. The solid block rather than the *ore* block, since an ore block is mostly its
+  stone matrix and averages out grey. For the three metals that have one, the *raw* block is the
+  source (`raw_iron_block`, `raw_gold_block`, `raw_copper_block`), because raw metal is what those
+  variants drop and it looks nothing like the refined bar — raw iron is a tan-brown where an iron
+  block is near-white. Coal `2B2B2B`→`101010`, iron `B8B1AA`→`A6886B`, gold `FFED00`→`DEA92F`,
+  redstone `9C0D0D`→`B01905`, lapis `1A51B8`→`1F438C`, diamond `54BFD9`→`62EDE4`, emerald
+  `30A758`→`2ACB58`, copper `A75A2C`→`B0664D`. Copper is the one value that isn't a straight mean:
+  `raw_copper_block` is speckled with green oxidation — a third of its pixels sit at hues of 46° to
+  161° — which pulled the mean to an olive-leaning `9A6A4F`, so it uses the mean of just its
+  copper-hued pixels instead. These reach the model close to unchanged: the tint multiplies shard
+  pixels averaging 229/255 and eye pixels averaging 252/255, so there is nothing meaningful to
+  compensate for.
 
 ### Fixed
 
@@ -54,49 +93,6 @@
   to its bind pose. `burrow` ends with the body 32 units (two blocks) down, so for the last ticks of
   `DIGGING_DOWN` — the animation is 20 ticks, the state lasts 30 — the lizard reappeared at ground
   level, in full view, before being discarded. Both one-shots now use `thenPlayAndHold`.
-
-### Changed
-
-- **Flee destinations are now chosen deterministically: the furthest reachable spot from the
-  player.** The goal no longer asks `DefaultRandomPos.getPosAway` where to run. That draws ten
-  *random* samples and discards any failing its pathability filters, so in a cave the player has
-  opened up, the survivors are whatever the open corridor happens to offer — which made the choice
-  of destination effectively arbitrary. It now sweeps 16 directions, probing each from its
-  outermost ring inwards and stopping at the first standable column, then takes whichever puts the
-  most distance between the lizard and the player. Anything no further away than the lizard already
-  is gets rejected, so a direction that curls back towards the player can't win, and if nothing is
-  reachable it still falls back to the random flee rather than standing still.
-- **Flee scan distance capped at 12 blocks, to match what the pathfinder can actually deliver.** A
-  mob's A* only expands nodes within `FOLLOW_RANGE` (16, Manhattan) of itself and gives up after
-  `FOLLOW_RANGE * 16` = 256 nodes, so a target beyond that can never be reached — the search spends
-  its entire node budget and returns a partial path regardless. Aiming inside that horizon means
-  paths usually complete, which is cheaper and more predictable, and costs nothing in range because
-  the lizard repaths every 10 ticks from wherever it has reached and only covers about six blocks in
-  that time.
-
-- **Flee repathing is now floored at 4 ticks.** The goal deliberately repaths early whenever the
-  current path runs out, but a destination the navigator can't actually reach leaves `isDone()` true
-  permanently — which meant a full escape-route search every single tick for the rest of the flee.
-  Pre-existing, but four times more expensive now that the search draws multiple routes.
-
-- **`maxUpStep` raised from the default 0.6 to 1.0, so the lizard steps over one-block rises instead
-  of jumping them.** `MoveControl` only jumps when the next waypoint is higher than `maxUpStep`, so
-  every ledge in an uneven cave floor was costing it a jump, and each jump bled the momentum that
-  the flee speed boost had just given it. 1.0 is the value vanilla gives horses and ravagers. The
-  same number feeds `WalkNodeEvaluator`, so its paths route over those rises as steps as well.
-
-- **The ore shards and eyes are now emissive.** They were the parts of the mob meant to catch your
-  eye, but lit normally against cave stone they are very easy to walk past. Both now get a second
-  fullbright pass on top of the variant tint, so they glow in the dark rather than merely being
-  brightly coloured. Drawn through `RenderType.eyes` — the same render type vanilla uses for
-  enderman/spider eye overlays — which is fullbright and additive in vanilla, and which Iris and
-  OptiFine route through their `gbuffers_spidereyes` program, so shader packs pick it up as a real
-  emissive surface. GeckoLib's own `AutoGlowingGeoLayer` was the alternative, but it builds a
-  custom render type shader packs have no convention for and needs a per-skin `_glowmask` texture,
-  which would have cost the per-variant tinting. Glow strength is scaled to 70% so the brighter
-  ores keep their hue instead of clipping to white; coal, being near-black, barely glows at all
-  (its eyes included). Dormant lizards are explicitly excluded — a glow would defeat the
-  camouflage outright.
 
 ## 1.0.0
 
