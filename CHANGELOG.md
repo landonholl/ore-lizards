@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.2.0+mc26.1.2
+
+A port of 1.2.0 to Minecraft 26.1.2 (Fabric Loader 0.19.5, Fabric API 0.155.2, GeckoLib 5.5.2, Java 25),
+built on top of the 26.2 port below rather than the 1.21.11 one, since 26.2 had already absorbed the
+26.x build changes (unobfuscated game, non-remapping Loom, Java 25, `com.geckolib`, `LightCoordsUtil`,
+`CreativeModeTabEvents`) and the GeckoLib 5.5 render-state naming. The mob is meant to behave exactly
+as it does on 1.20.1. Everything the `## 1.2.0+mc26.2`, `## 1.2.0+mc1.21.11`, `## 1.2.0+mc1.21.5`,
+`## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections list still applies here and is not repeated; the
+Java sources are identical to the 26.2 branch apart from the renderer registration below and the
+comments. Every vanilla signature the mod uses, common and client side, is the same on 26.1.2 as on
+26.2 - the whole thing compiled against 26.1.2 + GeckoLib 5.5.2 + Fabric API 0.155.2 before a single
+line was changed - and Fabric API 0.155.2 already has the renamed `fabric-creative-tab-api-v1` module
+(5.0.11) with `CreativeModeTabEvents.modifyOutputEvent`, and `CreativeModeTabs.SPAWN_EGGS` is already
+private on 26.1.2 with that module's transitive class tweaker re-opening it, so the 26.2 notes on both
+apply verbatim. Below is only what differs.
+
+### Changed
+
+- **GeckoLib 5.5.2 (Modrinth `XZTmZlwb`), the build published for 26.1.2, instead of 5.5.4.** Every
+  GeckoLib class the mod touches (`GeoRenderLayer`, `RenderPassInfo`, `PerBoneRender`,
+  `GeoEntityRenderer`, `GeoRenderer`, `GeoModel`, `GeoRenderState`, `GeoBone`, `CuboidGeoBone`,
+  `GeoCube`, `AnimationController`, `AnimationTest`, `AnimatableManager`) was `javap`-diffed against
+  5.5.4: the only difference is the type bound on `GeoEntityRenderer.convertRenderStateToLiving` (5.5.2
+  still asks for `LivingEntityRenderState & GeoRenderState`), a protected helper this mod never calls.
+  The class tweaker carries the same two `transitive-inject-interface` lines, so naming the render
+  state as a plain `LivingEntityRenderState` holds on 5.5.2 too, and the body pass is still one
+  `submitCustomGeometry` in `RenderTypes.entityCutout` at the default order. The `appear`/`burrow`
+  zero-tick transition check the 1.21.11 notes ask for on every GeckoLib bump was repeated on 5.5.2's
+  bytecode: `checkControllerState` captures `transitionTicks` before the handler runs, and
+  `initializeNewAnimation` uses that captured value only when `triggeredAnimTime > 0`, re-reading the
+  field otherwise - so `setTransitionTicks(0)` inside the handler still governs the animation the same
+  call starts. No `META-INF/jars/`, so still no `mclib` jar.
+- **`fabric.mod.json` declares `minecraft >=26.1.2`**, which is exactly the range GeckoLib 5.5.2's own
+  `fabric.mod.json` declares for itself (the 26.2 branch pinned `26.2` instead, though GeckoLib 5.5.4
+  declares `>=26.2`). Only 26.1.2 was built and smoke-tested; the same source does compile against 26.2
+  + GeckoLib 5.5.4, which is what the `26.2` branch is, but that branch's jar is the one to use there.
+- **The renderer is registered with vanilla's `EntityRenderers.register`, not Fabric API's
+  `EntityRendererRegistry.register`.** Fabric API marks `EntityRendererRegistry` `@Deprecated` on 26.x
+  (rendering-v1 23.3.1 in 0.155.2 and 25.3.3 in 0.159.0 alike) - it was the build's only deprecation
+  warning - and its `register` is a one-line delegate to the vanilla method. That method is private in
+  vanilla; it compiles and runs because `fabric-transitive-access-wideners-v1` re-opens it
+  (`transitive-accessible method ... EntityRenderers register`), the same widener that makes
+  `SpawnPlacements.register` usable on the common side. Registration still happens in
+  `onInitializeClient`, before the `EntityRenderDispatcher`'s first resource reload reads the provider
+  map, so nothing about *when* the renderer exists changed.
+- **Both extra render passes still go to collector order 1, but the reason reads differently on
+  26.1.2, because its collector is the 1.21.11 shape, not 26.2's.** There are no render phases and no
+  `StagedVertexBuffer` here: `MultiBufferSource.BufferSource` is still the playback sink (one shared
+  builder, a handful of fixed buffers, `lastSharedType`), `CustomFeatureRenderer.Storage` files each
+  `submitCustomGeometry` by `RenderType.hasBlending()` into either a solid or a translucent
+  `HashMap<RenderType, List<CustomGeometrySubmit>>`, and `FeatureRenderDispatcher.renderAllFeatures`
+  runs `renderSolidFeatures` - every collector order ascending out of `SubmitNodeStorage`'s
+  `Int2ObjectAVLTreeMap`, and within each order the model, model-part, flame, leash, item, block,
+  custom-geometry and particle solids - then `renderTranslucentFeatures` over every order again, then
+  translucent particles. Custom geometry is drawn one render type at a time (`getBuffer(type)`, then
+  the type's list in submission order), with `HashMap` order between types. So the body
+  (`entityCutout`, order 0, solid map) is drawn during order 0's solid pass; the tint (same render
+  type, order 1) during order 1's solid pass, after every order-0 solid draw; and the glow (`eyes`, a
+  blending type, order 1) during the translucent sweep, after every solid draw of every order. On this
+  collector the 1.21.11 argument - a tint at order 0 is appended to the body's own per-type list -
+  would also have held, but the order-1 placement is what both 26.1.2 and 26.2 actually guarantee,
+  matches vanilla's `EyesLayer` (order 1 here too), and keeps the layer's source identical to the 26.2
+  branch, so it stays. 26.2's `SharedConstants.DEBUG_SHUFFLE_MODELS` flag exists on 26.1.2 as well,
+  but `CustomFeatureRenderer` does not shuffle anything. `OreTintLayer`'s comments and CLAUDE.md
+  describe the 26.1.2 mechanics; the 26.2 ones are in the section below.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 26.1.2 + GeckoLib 5.5.2 and
+  smoke-tested on a headless dedicated server only (a data pack `#load` function summoning a lizard on
+  the first tick and a `#tick` function stopping the server - see CLAUDE.md), so everything the 26.2 and
+  1.21.11 sections list as unverified still wants a look in a client: that the tint submitted at order 1
+  lands on the two bones exactly as before, that the concrete `LivingEntityRenderState` is the state
+  GeckoLib 5.5.2 hands the layer, whether Iris maps the `eyes` render type to `gbuffers_spidereyes` on
+  26.1.2, and how a spectator sees a buried lizard. Also that the renderer registered through vanilla's
+  `EntityRenderers.register` is picked up at all (a missing renderer would draw nothing - compiling
+  through the transitive widener is the only check that was possible here).
+
 ## 1.2.0+mc26.2
 
 A port of 1.2.0 to Minecraft 26.2 (Fabric Loader 0.19.5, Fabric API 0.159.0, GeckoLib 5.5.4, Java 25),

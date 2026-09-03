@@ -27,9 +27,9 @@ public class OreLizardsMod implements ModInitializer {
 		ModEntities.register();
 		ModItems.register();
 		FabricDefaultAttributeRegistry.register(ModEntities.ORE_LIZARD, OreLizardEntity.createAttributes());
-		// Fabric API 0.159 (26.2) renamed the item-group module: ItemGroupEvents.modifyEntriesEvent is
+		// Fabric API for 26.x (0.155 on 26.1.2) renamed the item-group module: ItemGroupEvents.modifyEntriesEvent is
 		// CreativeModeTabEvents.modifyOutputEvent, same tab key, same "append to the tab" semantics.
-		// CreativeModeTabs.SPAWN_EGGS is private in 26.2's own source; it compiles because Fabric's
+		// CreativeModeTabs.SPAWN_EGGS is private in 26.x's own source; it compiles because Fabric's
 		// creative-tab module ships a transitive class tweaker that re-opens the tab keys.
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.SPAWN_EGGS)
 				.register(output -> output.accept(ModItems.ORE_LIZARD_SPAWN_EGG));

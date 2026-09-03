@@ -29,12 +29,12 @@ import java.util.function.BiConsumer;
  * <p>Both bones then get a further emissive pass, so they read as glowing crystal rather than
  * painted rock - the mob was very hard to pick out against cave stone otherwise.
  *
- * <p><b>26.2 / GeckoLib 5.5 shape.</b> Entity renderers do not draw. They <em>submit</em> geometry to
- * a {@link SubmitNodeCollector}, which records each submission's render type and a copy of its pose
- * under the collector order it was submitted at; once every entity is in, vanilla sorts each order's
- * submissions into phases (solid, translucent custom geometry, outline, ...), batches each phase by
- * render type into one shared {@code StagedVertexBuffer}, and executes those draws in sequence.
- * GeckoLib follows suit: its model pass is one {@code submitCustomGeometry} call, and a layer's
+ * <p><b>26.1.2 / GeckoLib 5.5 shape.</b> Entity renderers do not draw. They <em>submit</em> geometry
+ * to a {@link SubmitNodeCollector}, which records each submission's render type and a copy of its pose
+ * under the collector order it was submitted at; once every entity is in, vanilla plays every order
+ * back in ascending sequence, feature by feature, one render type at a time, through a
+ * {@code MultiBufferSource.BufferSource} - a solid sweep over all orders first, then a translucent
+ * one. GeckoLib follows suit: its model pass is one {@code submitCustomGeometry} call, and a layer's
  * per-bone tasks ({@link #addPerBoneRender}) run at submission time with the pose stack placed at the
  * bone, so they too submit rather than draw, and the collector captures the bone's pose for us at the
  * moment the task runs. What is left of the three-pass structure is therefore small: the base model
@@ -42,7 +42,9 @@ import java.util.function.BiConsumer;
  * into the model's own render type), and the emissive re-draw (submitted from the same task into
  * vanilla's {@code eyes} render type) - both extra passes one collector order after the body, see
  * {@link #submitBonePasses} for why. Everything the passes need from the entity is copied into the
- * render state in {@link #addRenderData} or already there on the vanilla state.
+ * render state in {@link #addRenderData} or already there on the vanilla state. This class is
+ * source-identical to the 26.2 branch, whose collector has a different internal shape (render phases
+ * over a {@code StagedVertexBuffer}) but promises the same order-to-order sequencing.
  *
  * <p>The render state is named outright as {@link LivingEntityRenderState}: GeckoLib 5.5 injects its
  * {@code GeoRenderState} interface into vanilla's {@code EntityRenderState} through a transitive class
@@ -148,25 +150,26 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity, Void, LivingEn
 	 * <p><b>Why both passes are submitted one order later.</b> Each pass has to be drawn <em>after</em>
 	 * the body: the tint at the same depth as the body's quads, where the later draw wins, and the glow
 	 * writing no depth, so the body would simply paint over it. The old rule - never ask the buffer
-	 * source for a different render type while the model's batch is being written - was one way of
-	 * guaranteeing that; the 1.21.11 collector's per-render-type submission lists were another. 26.2 has
-	 * neither. A submission goes into a phase of the collection for its order, chosen by its render
-	 * type ({@code SubmitNodeCollection.submitCustomGeometry}: outline types to the outline phase,
-	 * blending types like {@code eyes} to translucent custom geometry, everything else - the body and
-	 * the tint - to solid), a phase collects every feature's submissions in a single list, and
-	 * {@code SimpleFeatureRenderPhase.maybeShuffle} shuffles that list whenever
-	 * {@code SharedConstants.DEBUG_SHUFFLE_MODELS} is on - Mojang's way of saying that the order of
-	 * submissions <em>within</em> a phase is not something to rely on. What the collector does promise
-	 * is the order between orders (ascending; {@code SubmitNodeStorage} keys its collections in an
-	 * {@code Int2ObjectAVLTreeMap}) and between phases (a fixed list, solid before translucent custom
-	 * geometry): {@code FeatureRenderDispatcher.renderAllFeatures} executes every solid phase first,
-	 * order by order ascending, and only then the translucent ones, again order by order. So the body
-	 * stays at order 0 and both extra passes go to order 1: the tint lands in order 1's solid phase,
-	 * after every order-0 solid draw (the body's among them), and the glow in order 1's translucent
-	 * custom geometry phase, which executes after every solid phase - so after both the body and the
-	 * tint. Vanilla's own {@code EyesLayer} submits at order 1 for the same reason. Relative to the
-	 * 1.21.11 port only the tint moved (from order 0 to 1); nothing visible changes, it just rests on an
-	 * ordering the collector actually guarantees.
+	 * source for a different render type while the model's batch is being written - still describes
+	 * 26.1.2's sink: {@code MultiBufferSource.BufferSource} gives every render type without a fixed
+	 * buffer one shared builder, and requesting another shared type draws whatever that builder holds.
+	 * On the submit side, {@code CustomFeatureRenderer.Storage} files each {@code submitCustomGeometry}
+	 * by {@code RenderType.hasBlending()} into a solid or a translucent
+	 * {@code HashMap<RenderType, List<CustomGeometrySubmit>>}, and
+	 * {@code FeatureRenderDispatcher.renderAllFeatures} runs {@code renderSolidFeatures} - every
+	 * collector order ascending ({@code SubmitNodeStorage} keys its collections in an
+	 * {@code Int2ObjectAVLTreeMap}), and within an order each feature's solids in a fixed sequence,
+	 * custom geometry one render type at a time in {@code HashMap} order with each type's list in
+	 * submission order - and only then {@code renderTranslucentFeatures}, over every order again. The
+	 * ordering the collector therefore promises is between orders and between the two sweeps; between
+	 * render types within one order it promises nothing. So the body stays at order 0 and both extra
+	 * passes go to order 1: the tint (the body's own render type, so solid) is drawn during order 1's
+	 * solid pass, after every order-0 solid draw including the body's; the glow ({@code eyes} blends, so
+	 * translucent) is drawn during the translucent sweep, after every solid draw of every order - so after
+	 * both the body and the tint. Vanilla's own {@code EyesLayer} submits at order 1 for the same reason.
+	 * A tint at order 0 would also have worked on this collector (appended to the body's per-type list,
+	 * exactly as the 1.21.11 port relied on) but not on 26.2, which replaces the per-type lists with
+	 * phases it may shuffle; order 1 is what both versions guarantee, so the code is the same on both.
 	 *
 	 * <p>The glow is skipped entirely for an invisible lizard. A dormant one is meant to be undetectable,
 	 * and a glow is exactly the thing that would give it away. GeckoLib already submits nothing for an
@@ -196,7 +199,7 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity, Void, LivingEn
 
 		if (!renderState.isInvisible) {
 			int glow = opaque(scaleRgb(tintRgb, GLOW_STRENGTH));
-			// LightCoordsUtil.FULL_BRIGHT is 26.2's home for what LightTexture.FULL_BRIGHT used to be; the
+			// LightCoordsUtil.FULL_BRIGHT is 26.x's home for what LightTexture.FULL_BRIGHT used to be; the
 			// eyes pipeline ignores the lightmap anyway, this just keeps the intent legible.
 			afterBody.submitCustomGeometry(renderPassInfo.poseStack(), RenderTypes.eyes(texture),
 					(pose, buffer) -> drawBoneCubes(cuboidBone, pose, buffer, LightCoordsUtil.FULL_BRIGHT, packedOverlay, glow));
