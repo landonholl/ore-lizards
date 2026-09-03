@@ -1,16 +1,6 @@
 {
 	"model": {
 		"type": "minecraft:model",
-		"model": "orelizards:item/ore_lizard_spawn_egg",
-		"tints": [
-			{
-				"type": "minecraft:constant",
-				"value": -9539986
-			},
-			{
-				"type": "minecraft:constant",
-				"value": -10231297
-			}
-		]
+		"model": "orelizards:item/ore_lizard_spawn_egg"
 	}
 }

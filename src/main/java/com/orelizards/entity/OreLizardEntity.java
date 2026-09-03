@@ -6,7 +6,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -15,6 +14,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.damagesource.DamageSource;
@@ -32,7 +32,6 @@ import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.PickaxeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
@@ -44,8 +43,8 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
-import software.bernie.geckolib.animation.AnimatableManager;
-import software.bernie.geckolib.animation.AnimationController;
+import software.bernie.geckolib.animatable.manager.AnimatableManager;
+import software.bernie.geckolib.animatable.processing.AnimationController;
 import software.bernie.geckolib.animation.PlayState;
 import software.bernie.geckolib.animation.RawAnimation;
 import software.bernie.geckolib.util.GeckoLibUtil;
@@ -303,13 +302,13 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	@Override
 	public void readAdditionalSaveData(CompoundTag tag) {
 		super.readAdditionalSaveData(tag);
-		if (tag.contains(TAG_ORE_VARIANT, Tag.TAG_STRING)) {
-			OreVariant variant = OreVariant.byName(tag.getString(TAG_ORE_VARIANT));
-			if (variant != null) {
-				this.setOreVariant(variant);
-			}
-		}
-		this.setDeepslate(tag.getBoolean(TAG_DEEPSLATE));
+		// 1.21.5's CompoundTag getters hand back Optionals - empty when the key is missing or holds a
+		// different tag type - in place of a default value plus a separate typed contains() check. The
+		// two "keep the default" cases, no variant recorded and a name this version doesn't know, both
+		// fall out of the empty Optional: byName returns null for an unknown name and map() turns that
+		// into empty, so setOreVariant is only ever called with a real variant.
+		tag.getString(TAG_ORE_VARIANT).map(OreVariant::byName).ifPresent(this::setOreVariant);
+		this.setDeepslate(tag.getBooleanOr(TAG_DEEPSLATE, false));
 		this.becomeDormant();
 	}
 
@@ -617,7 +616,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return false;
 		}
 		ItemStack weapon = player.getMainHandItem();
-		if (!(weapon.getItem() instanceof PickaxeItem)) {
+		// 1.21.5 removed PickaxeItem along with the other tool subclasses - a pickaxe is a plain Item
+		// now, its digging behaviour coming entirely from its TOOL component - so "is it a pickaxe" is
+		// the minecraft:pickaxes item tag, which every vanilla pickaxe is in and which modded pickaxes
+		// are expected to join (it is what vanilla itself checks, e.g. for pickaxe-only enchantments).
+		if (!weapon.is(ItemTags.PICKAXES)) {
 			return false;
 		}
 		// "Iron or better" used to be a Tier identity check (IRON, DIAMOND or NETHERITE). 1.21.2
@@ -647,13 +650,20 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		return this.cache;
 	}
 
+	// GeckoLib 5 dropped the animatable from the controller constructor (the type argument has to be
+	// spelt out instead, or the diamond infers a bare GeoAnimatable and getLizardState is unreachable)
+	// and hands the handler an AnimationTest - a record of the animatable, its render state, its
+	// manager and the controller - in place of the old AnimationState. The handler now runs while the
+	// client extracts the entity's render state (GeoModel.prepareForRenderPass, called from
+	// GeoEntityRenderer.extractRenderState) rather than mid-render, but that is still on the client
+	// with the client's copy of the entity, so the synced STATE data is read exactly as before.
 	@Override
 	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
-		controllers.add(new AnimationController<>(this, "movement", MOVEMENT_TRANSITION_TICKS, state -> {
-			AnimationController<OreLizardEntity> controller = state.getController();
+		controllers.add(new AnimationController<OreLizardEntity>("movement", MOVEMENT_TRANSITION_TICKS, test -> {
+			AnimationController<OreLizardEntity> controller = test.controller();
 			// State checks take priority over the generic movement check below, so burrow/appear
 			// can't get interrupted by some incidental movement source during those windows.
-			State lizardState = state.getAnimatable().getLizardState();
+			State lizardState = test.animatable().getLizardState();
 
 			// Both state animations start with a zero-tick transition. GeckoLib otherwise spends
 			// transitionLength ticks blending from whatever pose the model is currently in into
@@ -668,20 +678,21 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			// where previously the transition ate a quarter of the eruption.
 			if (lizardState == State.DIGGING_DOWN) {
 				controller.transitionLength(STATE_TRANSITION_TICKS);
-				return state.setAndContinue(BURROW_ANIM);
+				return test.setAndContinue(BURROW_ANIM);
 			}
 			if (lizardState == State.ERUPTING) {
 				controller.transitionLength(STATE_TRANSITION_TICKS);
-				return state.setAndContinue(APPEAR_ANIM);
+				return test.setAndContinue(APPEAR_ANIM);
 			}
 
 			controller.transitionLength(MOVEMENT_TRANSITION_TICKS);
 			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
-			// mobs use for their walk cycle) rather than our own isFleeing() flag, so it scuttles
-			// whenever it's genuinely moving for any reason - fleeing, knockback, pushed by
-			// another entity, etc. - not only during the AI's own flee state.
-			if (state.isMoving()) {
-				return state.setAndContinue(SCUTTLE_ANIM);
+			// mobs use for their walk cycle; in GeckoLib 5 it reads the IS_MOVING render-state entry
+			// GeoEntityRenderer fills from walkAnimation.speed()) rather than our own isFleeing()
+			// flag, so it scuttles whenever it's genuinely moving for any reason - fleeing,
+			// knockback, pushed by another entity, etc. - not only during the AI's own flee state.
+			if (test.isMoving()) {
+				return test.setAndContinue(SCUTTLE_ANIM);
 			}
 			return PlayState.STOP;
 		}));

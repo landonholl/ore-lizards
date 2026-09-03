@@ -1,5 +1,108 @@
 # Changelog
 
+## 1.2.0+mc1.21.5
+
+A port of 1.2.0 to Minecraft 1.21.5 (Fabric Loader 0.19.5, Fabric API 0.128.2, GeckoLib 5.1.0,
+Java 21), built on top of the 1.21.4 port below. The mob is meant to behave exactly as it does on
+1.20.1. Everything the `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections list still applies here
+unchanged - `hurtServer`, the diamond-ore harvest check standing in for "iron or better", the
+`STEP_HEIGHT` attribute, the `ResourceLocation`-keyed flee modifier, the packed-int tint colours,
+vanilla's `EntityType.Builder`, `Item.Properties.setId`, `SpawnPlacements.register` through Fabric's
+access widener, and no `mclib` jar (GeckoLib 5.1.0 has no `META-INF/jars/` either) - and is not
+repeated. Below is only what 1.21.5 and the GeckoLib 4 → 5 jump forced on top of that. Plain API
+renames are not listed; GeckoLib's package reshuffle (`AnimatableManager` under `animatable.manager`,
+`AnimationController` under `animatable.processing`) and the renderer-side signature changes are
+covered only where they changed how something works.
+
+### Changed
+
+- **The client draws the lizard from a render state, so the rendering layer was rewritten around
+  GeckoLib 5's render-state model.** 1.21.2+ vanilla renders every entity from a snapshot
+  (`EntityRenderState`) taken before drawing, and GeckoLib 5 follows suit: its model resolves the
+  texture from that snapshot, its layer hooks receive the snapshot instead of the entity, and its
+  animation handlers run while the snapshot is being taken. Nothing about the three-pass structure
+  changed - base model, the `shards`/`eyes` bones again multiplied by the variant colour, then those
+  two bones once more fullbright through vanilla's `RenderType.eyes` at 0.7 × the colour, skipped for
+  an invisible lizard - but every piece of entity data it reads now travels through the render state
+  as a GeckoLib `DataTicket`: the variant's tint colour and the invisibility flag are copied in by
+  `OreTintLayer.addRenderData`, the stone/deepslate choice by `OreLizardModel.addAdditionalStateData`,
+  and all three are read back from the state in the render hooks. The tint pass moved from the
+  removed per-bone layer hook (`renderForBone`) to GeckoLib 5's per-bone render tasks
+  (`addPerBoneRender`), which GeckoLib runs after the whole model has been written with each bone's
+  pose restored - structurally the same "capture during the bone pass, draw after the model" that the
+  1.20.1 layer implemented by hand. The tint draws into the render type the model was just drawn with,
+  which the buffer source answers with the very batch still in progress, so it stays an append and
+  never a swap; the emissive draw stays deferred to the layer's `render`, which runs after every
+  per-bone task, because the tasks execute in hash-map order and an `eyes` request inside one of them
+  would still cut the other bone's tint off into a batch of its own. That is the same rule as before
+  (never request a different render type's buffer while the model's batch is still being written),
+  applied to the new hook layout. GeckoLib's own `AutoGlowingGeoLayer` was looked at as the 5.x
+  reference for a post-model extra pass and rejected again for the same reasons as on 1.20.1: it
+  re-renders the whole model through a GeckoLib-private `geckolib_emissive` pipeline shader packs have
+  no convention for and needs a `_glowmask` texture per skin, which would cost the per-variant tint.
+  Because vanilla's render state classes only implement GeckoLib's `GeoRenderState` through a runtime
+  mixin, the renderer and layer keep the render state as a bounded type parameter
+  (`R extends LivingEntityRenderState & GeoRenderState`), the way GeckoLib's own subclasses do.
+- **The tint pass is only scheduled when the model is actually being drawn.** GeckoLib 5 still runs
+  every layer hook for an entity that is invisible to the viewer; it merely skips the bone recursion,
+  and the bone recursion is the only place a per-bone task's pose gets captured. A task registered for
+  an invisible entity therefore runs against a pose that was never captured, which is a
+  `NullPointerException` inside GeckoLib for every dormant lizard in view. `OreTintLayer` notes in
+  `preRender` whether GeckoLib resolved a render type and buffer for the model and registers nothing
+  when it did not. This also happens to be the right behaviour: a dormant lizard draws nothing at all,
+  which is what 1.20.1 did too.
+- **Animation state is decided during render-state extraction rather than mid-render.** GeckoLib 5's
+  controller handler receives an `AnimationTest` (the animatable, its render state, its manager and the
+  controller) and is invoked from `GeoModel.prepareForRenderPass` while the client builds the render
+  state, not from inside the draw. It is still the client's copy of the entity, so the handler reads
+  the synced `STATE` data exactly as before and the appear/scuttle/burrow decisions are unchanged.
+  `isMoving()` now reads GeckoLib's `IS_MOVING` state entry, which `GeoEntityRenderer` fills from
+  `walkAnimation.speed()` against the same 0.015 threshold 4.x used. One consequence worth knowing:
+  GeckoLib 5 ticks controllers for an invisible entity too (it extracts a state and runs
+  `handleAnimations` even when nothing is drawn), where 4.x froze them. Nothing changes for the lizard
+  - the handler returns `STOP` while buried, so the controller sits stopped rather than frozen - but
+  the 1.20.1 note that a dormant lizard's controller "never ticks" is no longer literally true.
+- **"Is it a pickaxe" is now the `minecraft:pickaxes` item tag.** 1.21.5 removed `PickaxeItem` along
+  with the other tool subclasses - a pickaxe is a plain `Item` whose digging behaviour comes entirely
+  from its `TOOL` component - so the `instanceof` half of the 1.21.4 rule has nothing left to test.
+  The complete rule is now `stack.is(ItemTags.PICKAXES) && stack.isCorrectToolForDrops(DIAMOND_ORE)`,
+  which accepts exactly the vanilla set the 1.20.1 tier check did (iron, diamond, netherite) and
+  rejects wood, stone and gold. The one place it can differ from 1.20.1 is a modded pickaxe: it
+  qualifies if it is in the pickaxes tag (the tag vanilla itself uses to recognise pickaxes, which
+  modded ones are expected to join) and its material can mine diamond ore, and no longer qualifies if
+  it skipped the tag. Previously no modded pickaxe qualified at all.
+- **The spawn egg has its own baked texture.** 1.21.5 gave every vanilla egg an individual texture
+  and deleted the shared `spawn_egg`/`spawn_egg_overlay` layers and the `template_spawn_egg` model, so
+  the 1.21.4 item model definition - the template plus two constant tints - has nothing left to tint.
+  `textures/item/ore_lizard_spawn_egg.png` is generated from the 1.21.4 client's two layer textures by
+  doing in pixel space exactly what the tinted model did at draw time: body texels multiplied by
+  `#6E6E6E`, spot texels multiplied by `#63E1FF`, spots composited over body with the 10% alpha
+  cutout `item/generated` applies. The model is now a plain `item/generated` with that texture as
+  `layer0`, and the item model definition is a plain `minecraft:model` with no tints. Same silhouette
+  and colours as the 1.21.4 egg; the only difference is that the multiply is baked at texture
+  resolution instead of applied per draw, which is not visible.
+- **Saved-lizard data is read through `CompoundTag`'s `Optional` getters.** 1.21.5 replaced
+  `contains(key, type)` + `getString(key)` with `getString(key)` returning an `Optional` that is empty
+  when the key is missing or holds another tag type, and `getBoolean` with `getBooleanOr(key, false)`.
+  Semantics are unchanged: a lizard saved without a variant, or with a name this version doesn't
+  recognise, keeps the default rather than being re-rolled, because `byName`'s null for an unknown
+  name collapses into the empty `Optional` and nothing is set.
+
+### Not verified
+
+- **Rendering, and the spawn egg's appearance.** Compiled against 1.21.5 + GeckoLib 5.1.0 and
+  smoke-tested on a headless dedicated server only, and this is the first port where the layer is a
+  genuine rewrite rather than a signature update. Everything in it wants a look in a client before
+  release: that the tint pass lands on the model's own batch (the two bones should look exactly as
+  tinted as on 1.20.1, with no re-typed tail or legs), that the emissive pass glows and does not shine
+  through walls, that a buried lizard draws nothing and throws no per-bone-task exception, that the
+  `appear`/`burrow` transitions still start on their first frame under GeckoLib 5's extraction-time
+  handler, and that the egg icon reads as the grey-and-cyan egg it was. Also unverified: how a
+  spectator sees a buried lizard (GeckoLib 5, like vanilla, draws invisible mobs as translucent ghosts
+  for spectators; the tint is drawn in that case and the glow is not, which matches 1.20.1's
+  behaviour by construction but was not observed), and whether GeckoLib 5's `IS_MOVING` fires the
+  scuttle at the same speeds 4.x's `isMoving()` did.
+
 ## 1.2.0+mc1.21.4
 
 A port of 1.2.0 to Minecraft 1.21.4 (Fabric Loader 0.19.5, Fabric API 0.119.4, GeckoLib 4.8.5,
