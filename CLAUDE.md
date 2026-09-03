@@ -8,6 +8,48 @@ A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds 
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
 walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
 
+## Version branches
+
+This checkout (`main`) is Minecraft **1.20.1** and the **behavioural source of truth**. Every other
+supported version lives on a branch named exactly after it (`1.21.1`, `1.18.2`, `26.2`, ...), each a
+complete standalone project with `mod_version=1.2.0+mc<version>`. Rules that keep this workable:
+
+- Behaviour changes are made on `main` first, then re-applied to each branch. A version branch is
+  never authoritative for what the mob does; its top `CHANGELOG.md` section documents only what had
+  to deviate on that version and why, and its `CLAUDE.md` carries the version-specific gotchas.
+- Branch names match the exact Minecraft version the GeckoLib build targets. `fabric.mod.json`
+  declares the same game range the GeckoLib build itself declares.
+- GeckoLib generations: 3.x for <= 1.19.2 (`software.bernie.geckolib3`, mod id `geckolib3`,
+  whole-model layer passes with hidden bones), 4.x for 1.19.3 - 1.21.4, 5.x for 1.21.5+ (render
+  states, then the 1.21.9+ submit/collector renderer). 26.x Minecraft ships unobfuscated, so those
+  branches use the non-remapping `fabric-loom` plugin and Java 25.
+- Ports were verified by `./gradlew build` plus a headless dedicated-server smoke test (init,
+  `/summon`, save, stop). **Client rendering has not been eyeballed on any port** - the tint pass,
+  the `RenderType.eyes` glow and the appear/burrow timing need a `runClient` check per branch.
+
+| Branch | Minecraft | GeckoLib | Java | Notes |
+|---|---|---|---|---|
+| `main` / `1.20.1` | 1.20.1 | 4.8.4 | 17 | **Source of truth.** All behaviour changes land here first. |
+| `1.16.5` | 1.16.5 | 3.0.107 | 8 | No deepslate or copper in 1.16; iron/gold drop ingots. Java 8 syntax. |
+| `1.17.1` | 1.17.1 | 3.0.32 | 16 | Deepslate attribution also samples the block underfoot (worlds end at Y=0). |
+| `1.18.2` | 1.18.2 | 3.0.80 | 17 | GeckoLib 3: hold-last-frame and per-bone glow re-implemented. |
+| `1.19.2` | 1.19.2 | 3.1.40 | 17 | GeckoLib 3.1. |
+| `1.19.4` | 1.19.4 | 4.2 | 17 | |
+| `1.20.2` | 1.20.2 | 4.3.1 | 17 | |
+| `1.20.4` | 1.20.4 | 4.4.4 | 17 | |
+| `1.20.6` | 1.20.6 | 4.5.4 | 21 | |
+| `1.21.1` | 1.21.1 | 4.9.2 | 21 | |
+| `1.21.3` | 1.21.3 | 4.7.1 | 21 | |
+| `1.21.4` | 1.21.4 | 4.8.5 | 21 | Pickaxe rule becomes "can mine diamond ore"; item model definitions. |
+| `1.21.5` | 1.21.5 | 5.1.0 | 21 | GeckoLib 5 render-state rewrite of the tint/glow layer; baked spawn-egg texture. |
+| `1.21.6` | 1.21.6 | 5.2.0 | 21 | |
+| `1.21.7` | 1.21.7 - 1.21.8 | 5.2.1 | 21 | |
+| `1.21.8` | 1.21.8 | 5.2.2 | 21 | |
+| `1.21.10` | 1.21.10 | 5.3-alpha-3 | 21 | **Experimental** - the only GeckoLib build for 1.21.10 is an alpha. |
+| `1.21.11` | 1.21.11 | 5.4.5 | 21 | Submit/collector renderer; `ResourceLocation` is `Identifier` here. |
+| `26.1.2` | >= 26.1.2 | 5.5.2 | 25 | Unobfuscated Minecraft: non-remapping Loom plugin. |
+| `26.2` | 26.2 | 5.5.4 | 25 | Unobfuscated Minecraft: non-remapping Loom plugin. |
+
 ## Commands
 
 ```bash

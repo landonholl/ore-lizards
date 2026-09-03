@@ -36,3 +36,6 @@ run/
 
 # macos
 .DS_Store
+
+# claude code agent worktrees
+.claude/worktrees/
