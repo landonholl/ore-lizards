@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.2.0+mc1.20.6
+
+A port of 1.2.0 to Minecraft 1.20.6 (Fabric API 0.100.8, GeckoLib 4.5.4, Java 21). The mob is meant
+to behave exactly as it does on 1.20.1; this section lists only what had to be done differently to
+get there, and why. Plain API renames that change nothing at runtime are not listed.
+
+### Changed
+
+- **Step height is set as the `STEP_HEIGHT` attribute (1.0) in `createAttributes`, rather than by
+  `setMaxUpStep` in the constructor.** 1.20.5 turned the per-entity `maxUpStep` field into a generic
+  attribute, and `Entity.maxUpStep()` on a living entity now just reads it, so `MoveControl` and
+  `WalkNodeEvaluator` see exactly the value they did before. The default `createLivingAttributes`
+  supplies is the same 0.6 the old field defaulted to, so the reasoning recorded under 1.1.0 stands.
+- **The spawn placement (`ON_GROUND`, `MOTION_BLOCKING`, `canSpawn`) is declared on the entity type
+  in `ModEntities`, through Fabric's `FabricEntityType.Builder.createMob(...).spawnRestriction(...)`,
+  instead of by a `SpawnPlacements.register` call in `OreLizardsMod`.** 1.20.5 made
+  `SpawnPlacements.register` private. Fabric API does widen it again, but with a plain access widener
+  rather than a transitive one, which means it is applied at runtime and not to the compile
+  classpath - so a direct call no longer compiles in a dev environment. The builder invokes that same
+  method when the type is built, during `ModEntities`'s class initialisation, which is the same point
+  in `onInitialize` the old call ran from; the biome spawn entry and the default-attribute
+  registration are still made from `OreLizardsMod` as before. Since `FabricEntityTypeBuilder` is
+  deprecated on this version, the type now goes through vanilla's `EntityType.Builder` (`sized`,
+  `clientTrackingRange` - the same dimensions and 8-chunk range) and Fabric's no-argument `build()`,
+  which skips the DFU schema lookup vanilla's `build(String)` performs and which would log "No data
+  fixer registered" for any modded entity type.
+- **The `libs/mclib-20.jar` workaround is gone.** GeckoLib 4.5.4 ships no jar-in-jar at all - its
+  molang code lives in `software.bernie.geckolib.loading.math` - so there is nothing for the Loom
+  dev-launch classpath to miss and nothing to extract. The dependency line and the jar are removed.
+
+### Not changed, but worth knowing
+
+- **The rendering code is byte-for-byte the 1.20.1 code.** GeckoLib 4.5.4's `GeoRenderLayer` hooks
+  and `renderCubesOfBone` have the same parameter lists as 4.8.4's on 1.20.1 (r, g, b, a floats -
+  the packed-ARGB colour parameter arrives in a later GeckoLib), so `OreTintLayer` compiles as is.
+  Both render rules from 1.1.0 - never request a different render type's buffer from inside the bone
+  recursion, and the emissive pass is a real `RenderType.eyes` pass - still hold as written.
+- The flee speed modifier's operation is spelt `ADD_MULTIPLIED_TOTAL`; 1.20.5 renamed
+  `MULTIPLY_TOTAL` without changing the arithmetic. The UUID-keyed `AttributeModifier` constructor
+  and `removeModifier(UUID)` are still present on 1.20.6 (both go away in 1.21).
+- 1.20.5's item data components did not touch anything here: the spawn egg still takes its two
+  colours in the `SpawnEggItem` constructor, and the drops are plain `ItemStack`s.
+- Verified by compiling and by a headless dedicated-server run (mod init, `/summon`, clean stop).
+  Not verified in a client: the eruption/burrow animations, the tint and emissive passes and the spawn
+  egg colours. None of that code changed, but GeckoLib 4.5.4's renderer internals differ from 4.8.4's,
+  so a visual check is the one thing this port still owes.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it

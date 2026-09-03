@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.20.6 (Java 21, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.5.4 drives its model/animations.
+
+This is the `1.20.6` port branch. The 1.20.1 original lives on `main`; behaviour is meant to be
+identical, and the `## 1.2.0+mc1.20.6` section of [CHANGELOG.md](CHANGELOG.md) records exactly where
+the port had to differ and why. The "1.20.6 API notes" section below lists the code-level differences
+so a diff against `main` isn't mistaken for a bug.
 
 ## Commands
 
@@ -146,21 +151,48 @@ Two GeckoLib timing rules this mob depends on, both learned the hard way:
 
 ## Spawning
 
-Registered in [OreLizardsMod](src/main/java/com/orelizards/OreLizardsMod.java) as `MobCategory.AMBIENT`
-(not `CREATURE` — `CREATURE`'s population cap is shared with all surface animals and is effectively
-always full underground, so the mob would never get a spawn attempt). Weight 1, plus a 30% rejection
-roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
+The entity type is built in [ModEntities](src/main/java/com/orelizards/registry/ModEntities.java) as
+`MobCategory.AMBIENT` (not `CREATURE` — `CREATURE`'s population cap is shared with all surface animals
+and is effectively always full underground, so the mob would never get a spawn attempt), and its spawn
+placement (`ON_GROUND`, `MOTION_BLOCKING`, `canSpawn`) is declared there too, through Fabric's
+`FabricEntityType.Builder.createMob(...).spawnRestriction(...)`. It is deliberately not a
+`SpawnPlacements.register` call: 1.20.5 made that method private, and Fabric API's access widener for
+it is a plain (runtime-only) one, so a direct call fails to compile in dev even though it would work
+in a packaged jar. The biome spawn entry is still added from
+[OreLizardsMod](src/main/java/com/orelizards/OreLizardsMod.java): weight 1, plus a 30% rejection roll
+inside `canSpawn` because spawn weights are integers and 1 is the floor.
 
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4` (the midpoint of the 1.20.x stone→deepslate blend band), not by sampling blocks.
+
+## 1.20.6 API notes
+
+Where the code on this branch differs from `main` (1.20.1) for API reasons alone:
+
+- `defineSynchedData(SynchedEntityData.Builder)` — tracked data is declared on the builder, not on
+  `this.entityData`. `finalizeSpawn` lost its trailing `CompoundTag` parameter.
+- Step height is the `Attributes.STEP_HEIGHT` attribute, set to 1.0 in `createAttributes`;
+  `setMaxUpStep` no longer exists and `Entity.maxUpStep()` reads the attribute on living entities.
+- `AttributeModifier.Operation.MULTIPLY_TOTAL` is `ADD_MULTIPLIED_TOTAL` (same maths). The UUID
+  constructor and `removeModifier(UUID)` still exist on 1.20.6; both go in 1.21.
+- `BlockState.isPathfindable(PathComputationType)` takes no level/pos arguments.
+- GeckoLib 4.5.4 has no `software.bernie.geckolib.core` package tier: `AnimatableInstanceCache` is in
+  `animatable.instance`; `AnimatableManager`, `AnimationController`, `RawAnimation` and `PlayState`
+  are in `animation`. Its `GeoRenderLayer` hooks and `renderCubesOfBone` still take r,g,b,a floats,
+  so `OreTintLayer` is unchanged from `main`.
+- `FabricEntityTypeBuilder` is deprecated here; `ModEntities` uses vanilla `EntityType.Builder` via
+  `FabricEntityType.Builder.createMob` and Fabric's no-argument `build()`, which skips the DFU schema
+  lookup that `build(String)` performs (and which logs "No data fixer registered" for mods).
 
 ## Repo gotchas
 
-- `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
-  dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
-  `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it.
+- There is no `libs/mclib-*.jar` on this branch. The 1.20.1 original checks one in because its
+  GeckoLib (4.8.4) ships `mclib` jar-in-jar and Loom 1.17's dev-launch classpath doesn't pick nested
+  jars up; GeckoLib 4.5.4 has no `META-INF/jars/` at all (its molang code is in
+  `software.bernie.geckolib.loading.math`), so there is nothing to extract. If GeckoLib is ever
+  bumped on this branch, check `META-INF/jars/` in the new jar before assuming `runClient` starts.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
