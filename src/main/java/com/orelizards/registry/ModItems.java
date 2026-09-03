@@ -14,7 +14,7 @@ public final class ModItems {
 
 	public static final Item ORE_LIZARD_SPAWN_EGG = Registry.register(
 			BuiltInRegistries.ITEM,
-			new ResourceLocation(OreLizardsMod.MOD_ID, "ore_lizard_spawn_egg"),
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "ore_lizard_spawn_egg"),
 			new SpawnEggItem(ModEntities.ORE_LIZARD, EGG_BACKGROUND_COLOR, EGG_HIGHLIGHT_COLOR, new Item.Properties()));
 
 	private ModItems() {

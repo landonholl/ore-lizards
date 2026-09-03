@@ -69,12 +69,10 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 			return;
 		}
 
-		int color = animatable.getOreVariant().getTintColor();
-		float red = ((color >> 16) & 0xFF) / 255F;
-		float green = ((color >> 8) & 0xFF) / 255F;
-		float blue = (color & 0xFF) / 255F;
-
-		getRenderer().renderCubesOfBone(poseStack, bone, buffer, packedLight, packedOverlay, red, green, blue, 1.0F);
+		// GeckoLib 4.5+ takes the tint as one packed ARGB int - the form VertexConsumer.setColor(int)
+		// consumes - instead of four floats. Alpha forced opaque: a straight multiply over the base pass.
+		int color = opaque(animatable.getOreVariant().getTintColor());
+		getRenderer().renderCubesOfBone(poseStack, bone, buffer, packedLight, packedOverlay, color);
 
 		PendingGlow pendingGlow = this.pending[slot];
 		pendingGlow.bone = bone;
@@ -137,16 +135,29 @@ public class OreTintLayer extends GeoRenderLayer<OreLizardEntity> {
 	 */
 	private void renderEmissive(PoseStack poseStack, OreLizardEntity animatable, GeoBone bone, PendingGlow pendingGlow,
 			VertexConsumer emissiveBuffer, int packedOverlay) {
-		int color = animatable.getOreVariant().getTintColor();
-		float red = ((color >> 16) & 0xFF) / 255F * GLOW_STRENGTH;
-		float green = ((color >> 8) & 0xFF) / 255F * GLOW_STRENGTH;
-		float blue = (color & 0xFF) / 255F * GLOW_STRENGTH;
+		int color = opaque(scaleRgb(animatable.getOreVariant().getTintColor(), GLOW_STRENGTH));
 
 		poseStack.pushPose();
 		poseStack.last().pose().set(pendingGlow.pose);
 		poseStack.last().normal().set(pendingGlow.normal);
-		getRenderer().renderCubesOfBone(poseStack, bone, emissiveBuffer, LightTexture.FULL_BRIGHT, packedOverlay,
-				red, green, blue, 1.0F);
+		getRenderer().renderCubesOfBone(poseStack, bone, emissiveBuffer, LightTexture.FULL_BRIGHT, packedOverlay, color);
 		poseStack.popPose();
+	}
+
+	/** An 0xRRGGBB colour with the alpha byte set to fully opaque, as GeckoLib's packed-int colour expects. */
+	private static int opaque(int rgb) {
+		return 0xFF000000 | (rgb & 0xFFFFFF);
+	}
+
+	/**
+	 * Scales each channel of an 0xRRGGBB colour. Truncates rather than rounds, which is what the
+	 * float-channel path this replaced did when it quantised {@code channel / 255 * factor} back to a
+	 * byte, so the glow lands on exactly the same values as before.
+	 */
+	private static int scaleRgb(int rgb, float factor) {
+		int red = (int) (((rgb >> 16) & 0xFF) * factor);
+		int green = (int) (((rgb >> 8) & 0xFF) * factor);
+		int blue = (int) ((rgb & 0xFF) * factor);
+		return (red << 16) | (green << 8) | blue;
 	}
 }

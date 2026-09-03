@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Fabric mod for Minecraft 1.20.1 (Java 17, Mojang official mappings) that adds a single mob: the
+A Fabric mod for Minecraft 1.21.1 (Java 21, Mojang official mappings) that adds a single mob: the
 Ore Lizard — a rare, invisible-while-dormant cave critter that erupts from the floor when a player
-walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/animations.
+walks near, flees, then burrows back down. GeckoLib 4.9.2 drives its model/animations.
+
+This branch (`1.21.1`) is a port of the 1.20.1 original on `main`; behaviour is meant to be
+identical, and the `## 1.2.0+mc1.21.1` section of [CHANGELOG.md](CHANGELOG.md) lists every place
+the port had to differ and why. When in doubt about *what the mob should do*, `main` is the source
+of truth.
 
 ## Commands
 
@@ -154,13 +159,23 @@ roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
 Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
 `BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
 during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+by `Y < -4` (the midpoint of the stone→deepslate blend band, unchanged since 1.18), not by sampling
+blocks.
+
+Registration is `SpawnPlacements.register(...)`, which vanilla 1.21 made *private*. It compiles and
+runs because Fabric API's object-builder module ships a transitive access widener that re-opens it
+(Loom applies it to the dev jar; Fabric applies it at runtime). Don't "fix" the private call by
+switching to `FabricEntityTypeBuilder` — that class is deprecated here — and don't drop the Fabric
+API dependency thinking the mod only uses it for biome spawns.
 
 ## Repo gotchas
 
-- `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
-  dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
-  `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it.
+- There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
+  because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
+  GeckoLib 4.9.2 has no `META-INF/jars/` at all and no mclib references, so the workaround was
+  dropped along with its `implementation files(...)` line. If a future GeckoLib bump brings a nested
+  jar back, `runClient`/`runServer` will fail with `NoClassDefFoundError` and the fix is the same
+  extract-and-reference dance described on `main`.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
@@ -168,3 +183,28 @@ by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by samp
 - `orelizards.mixins.json` is wired up but has no mixins yet.
 - Keep [CHANGELOG.md](CHANGELOG.md) updated — it is maintained in detail, with the reasoning behind
   each change, and is the best record of why things are the way they are.
+
+## 1.21.1-specific API notes
+
+Things that bit during the port and will bite again on any further bump:
+
+- **Attribute modifiers are keyed by `ResourceLocation`, not `UUID`.** `AttributeModifier(id, amount,
+  operation)` — no name string — and `AttributeInstance.hasModifier/getModifier/removeModifier` take
+  the id. Ours is `orelizards:flee_speed_boost`. `Operation.MULTIPLY_TOTAL` is now
+  `ADD_MULTIPLIED_TOTAL` (same maths).
+- **`setMaxUpStep` is gone; step height is the `Attributes.STEP_HEIGHT` attribute** (set in
+  `createAttributes`). `Entity.maxUpStep()` still exists and reads the attribute.
+- **`defineSynchedData` takes a `SynchedEntityData.Builder`**; define on the builder, not on
+  `this.entityData`. `finalizeSpawn` lost its trailing `CompoundTag`; `dropCustomDeathLoot` is
+  `(ServerLevel, DamageSource, boolean)` — the looting multiplier is gone.
+- **GeckoLib 4.9's `renderCubesOfBone` takes one packed ARGB `int`**, not four floats — the same form
+  `VertexConsumer.setColor(int)` eats. Forget the alpha byte and the bone renders fully transparent.
+  `OreTintLayer` has `opaque()`/`scaleRgb()` helpers for this; use them rather than hand-packing.
+- **GeckoLib's `core` package is gone.** `AnimatableInstanceCache` is under
+  `software.bernie.geckolib.animatable.instance`; `AnimationController`, `AnimatableManager`,
+  `RawAnimation`, `PlayState`, `AnimationState` are all directly under
+  `software.bernie.geckolib.animation`. Render-layer hook signatures (`renderForBone`, `render`) are
+  unchanged from 4.8, so the deferred emissive pass in `OreTintLayer` ported as-is.
+- **`new ResourceLocation(ns, path)` is private** — use `ResourceLocation.fromNamespaceAndPath`.
+- `EntityType.Builder.build(String)` takes a bare id string that only feeds the DataFixer schema
+  lookup; description id and default loot table still derive from the registry key.

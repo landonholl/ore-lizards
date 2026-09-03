@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.2.0+mc1.21.1
+
+A port of 1.2.0 to Minecraft 1.21.1 (Fabric Loader 0.19.5, Fabric API 0.116.17, GeckoLib 4.9.2,
+Java 21). The mob is meant to behave exactly as it does on 1.20.1; everything below is a place the
+target version forced a different implementation, with what that does and does not change. Plain
+API renames (`ResourceLocation.fromNamespaceAndPath`, `SynchedEntityData.Builder`, GeckoLib's
+package reshuffle, the shorter `finalizeSpawn`/`dropCustomDeathLoot` signatures) are not listed.
+
+### Changed
+
+- **Step height is now the `STEP_HEIGHT` attribute rather than a setter.** 1.20.5 removed
+  `Entity.setMaxUpStep` and made step height a generic attribute, so the lizard's 1.0 now lives in
+  `createAttributes` alongside its health and speed. Same value, same effect on `MoveControl` and the
+  pathfinder's `WalkNodeEvaluator`; the one visible difference is that it is now an attribute like any
+  other, so `/attribute` can read or override it.
+- **The flee speed boost is identified by `orelizards:flee_speed_boost` instead of a UUID.** 1.21
+  keys attribute modifiers by `ResourceLocation` and dropped the separate display name. The modifier
+  is transient (never written to NBT), so no saved lizard carries the old id. `MULTIPLY_TOTAL` became
+  `ADD_MULTIPLIED_TOTAL` under the rename; the maths - final speed = base total × (1 + 0.925) - is
+  unchanged.
+- **Tint and glow colours are handed to GeckoLib as one packed ARGB int.** GeckoLib 4.5+ replaced the
+  four float channels on `renderCubesOfBone` with a single `0xAARRGGBB`. The tint pass packs the
+  variant colour with a fully opaque alpha, exactly the multiply it was before. The emissive pass
+  scales each channel by `GLOW_STRENGTH` in integer space and truncates rather than rounds, because
+  that is what the old float path did when it quantised `channel / 255 × 0.7` back to a byte - so the
+  glow lands on byte-identical colours. The three-pass structure (base, tint, deferred `RenderType.eyes`
+  pass after the whole model is written) is untouched: GeckoLib 4.9.2's `renderForBone`/`render`
+  layer hooks and its bone-recursion order are the same as 4.8.4's, so the buffer-swap rule in
+  `CLAUDE.md` still holds and the emissive draw is still deferred for the same reason.
+- **Entity type is built with vanilla's `EntityType.Builder`.** Fabric's `FabricEntityTypeBuilder`
+  still exists on 1.21.1 but is deprecated. `sized(0.9F, 0.6F)` is the same scalable hitbox
+  `EntityDimensions.scalable` spelt out, and `clientTrackingRange(8)` the same 8 chunks. The string
+  passed to `build` only feeds the DataFixer schema lookup; the entity's description id and default
+  loot table still derive from the registry key, so the lang key and `/summon` id are unchanged.
+- **`SpawnPlacements.register` is private in vanilla 1.21** and is reachable only because Fabric API's
+  object-builder module widens it. This is the officially supported route (it is what Fabric's own
+  builder calls), so spawn registration reads exactly as it does on 1.20.1 - but it is the reason the
+  Fabric API dependency is load-bearing beyond biome spawn injection.
+
+### Removed
+
+- **`libs/mclib-20.jar` and its `implementation files(...)` line.** GeckoLib 4.9.2 no longer bundles
+  mclib jar-in-jar (its `META-INF/jars/` is gone entirely and the jar has no mclib references), so the
+  Loom dev-classpath workaround the 1.20.1 build needed has nothing left to work around.
+
+### Not verified
+
+- **Rendering.** Compiled against the real 1.21.1 + GeckoLib 4.9.2 signatures and the layer code is
+  structurally identical to 1.20.1, but this port was built and smoke-tested on a headless dedicated
+  server only. The tint pass, the emissive pass, the buried-lizard invisibility skip and the
+  `appear`/`burrow` transition timing all want a look in a client before release.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it

@@ -1,5 +1,6 @@
 package com.orelizards.entity;
 
+import com.orelizards.OreLizardsMod;
 import com.orelizards.entity.ai.FleeAndBurrowGoal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
@@ -9,6 +10,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -42,14 +44,12 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib.animatable.GeoEntity;
-import software.bernie.geckolib.core.animatable.instance.AnimatableInstanceCache;
-import software.bernie.geckolib.core.animation.AnimatableManager;
-import software.bernie.geckolib.core.animation.AnimationController;
-import software.bernie.geckolib.core.animation.RawAnimation;
-import software.bernie.geckolib.core.object.PlayState;
+import software.bernie.geckolib.animatable.instance.AnimatableInstanceCache;
+import software.bernie.geckolib.animation.AnimatableManager;
+import software.bernie.geckolib.animation.AnimationController;
+import software.bernie.geckolib.animation.PlayState;
+import software.bernie.geckolib.animation.RawAnimation;
 import software.bernie.geckolib.util.GeckoLibUtil;
-
-import java.util.UUID;
 
 public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	public enum State {
@@ -80,7 +80,10 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final String TAG_ORE_VARIANT = "OreVariant";
 	private static final String TAG_DEEPSLATE = "Deepslate";
 
-	private static final UUID FLEE_SPEED_MODIFIER_ID = UUID.fromString("6f6a1f0a-6b6a-4e2b-9b8c-6f2e3a9d1a10");
+	// 1.21 keys attribute modifiers by ResourceLocation instead of UUID, and the id doubles as the
+	// modifier's name - there is no separate display string any more.
+	private static final ResourceLocation FLEE_SPEED_MODIFIER_ID =
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "flee_speed_boost");
 	// Matches the literal top-level key in ore_lizard.animation.json - your real Blockbench
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
@@ -139,6 +142,13 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	private static final int DIG_DURATION_TICKS = 30;
 	// 2.5x flee speed reduced by 23% (per feedback that it was too fast to react to): 2.5 * 0.77 = 1.925x.
 	private static final double FLEE_SPEED_BONUS = 0.925;
+	// Step over full blocks instead of jumping them. MoveControl only triggers a jump when the
+	// height of the next waypoint exceeds the step height, and the default 0.6 means every one-block
+	// rise in a cave floor became a jump - which kills the mob's momentum and made the flee speed
+	// boost read as much slower than it is. 1.0 is what vanilla gives horses and ravagers. The same
+	// value feeds WalkNodeEvaluator, so paths route over those rises as steps too. Since 1.20.5 this
+	// is the STEP_HEIGHT attribute (Entity.maxUpStep() reads it) rather than a setter on the entity.
+	private static final double MAX_UP_STEP = 1.0;
 
 	// A light spark trail so a lizard you've startled stays trackable across a dark cave instead of
 	// vanishing the moment it rounds a corner. One particle every few ticks is enough to follow -
@@ -156,12 +166,6 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 
 	public OreLizardEntity(EntityType<? extends OreLizardEntity> type, Level level) {
 		super(type, level);
-		// Step over full blocks instead of jumping them. MoveControl only triggers a jump when the
-		// height of the next waypoint exceeds maxUpStep, and the default 0.6 means every one-block
-		// rise in a cave floor became a jump - which kills the mob's momentum and made the flee
-		// speed boost read as much slower than it is. 1.0 is what vanilla gives horses and ravagers.
-		// The same value feeds WalkNodeEvaluator, so paths now route over those rises as steps too.
-		this.setMaxUpStep(1.0F);
 		this.goalSelector.addGoal(0, new FleeAndBurrowGoal(this));
 		this.goalSelector.addGoal(1, new FloatGoal(this));
 		// Look-flag goals, not move-flag - these run concurrently with fleeing rather than
@@ -177,7 +181,8 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 				.add(Attributes.MOVEMENT_SPEED, 0.3)
 				.add(Attributes.KNOCKBACK_RESISTANCE, 0.5)
 				.add(Attributes.ARMOR, 15.0)
-				.add(Attributes.ARMOR_TOUGHNESS, 8.0);
+				.add(Attributes.ARMOR_TOUGHNESS, 8.0)
+				.add(Attributes.STEP_HEIGHT, MAX_UP_STEP);
 	}
 
 	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, MobSpawnType spawnType,
@@ -258,21 +263,21 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	@Override
-	protected void defineSynchedData() {
-		super.defineSynchedData();
-		this.entityData.define(ORE_VARIANT, OreVariant.COAL.ordinal());
-		this.entityData.define(DEEPSLATE, false);
-		this.entityData.define(STATE, State.BURIED.ordinal());
+	protected void defineSynchedData(SynchedEntityData.Builder builder) {
+		super.defineSynchedData(builder);
+		builder.define(ORE_VARIANT, OreVariant.COAL.ordinal());
+		builder.define(DEEPSLATE, false);
+		builder.define(STATE, State.BURIED.ordinal());
 	}
 
 	@Override
 	public SpawnGroupData finalizeSpawn(ServerLevelAccessor level, DifficultyInstance difficulty, MobSpawnType spawnType,
-			@Nullable SpawnGroupData spawnGroupData, @Nullable CompoundTag dataTag) {
+			@Nullable SpawnGroupData spawnGroupData) {
 		boolean deepslate = this.blockPosition().getY() < DEEPSLATE_Y_LEVEL;
 		this.setDeepslate(deepslate);
 		this.setOreVariant(deepslate ? OreVariant.randomDeepslate(this.random) : OreVariant.random(this.random));
 		this.becomeDormant();
-		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData, dataTag);
+		return super.finalizeSpawn(level, difficulty, spawnType, spawnGroupData);
 	}
 
 	@Override
@@ -445,10 +450,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		this.setLizardState(State.FLEEING);
 		this.stateTimer = FLEE_DURATION_TICKS;
 		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
-		if (speed != null && speed.getModifier(FLEE_SPEED_MODIFIER_ID) == null) {
+		if (speed != null && !speed.hasModifier(FLEE_SPEED_MODIFIER_ID)) {
+			// ADD_MULTIPLIED_TOTAL is 1.21's name for what used to be MULTIPLY_TOTAL: same maths,
+			// final = total * (1 + amount).
 			speed.addTransientModifier(new AttributeModifier(
-					FLEE_SPEED_MODIFIER_ID, "Flee speed boost", FLEE_SPEED_BONUS,
-					AttributeModifier.Operation.MULTIPLY_TOTAL));
+					FLEE_SPEED_MODIFIER_ID, FLEE_SPEED_BONUS, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
 		}
 	}
 
@@ -616,9 +622,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		return tier == Tiers.IRON || tier == Tiers.DIAMOND || tier == Tiers.NETHERITE;
 	}
 
+	// 1.21 dropped the looting-multiplier argument (looting is applied through the enchantment system
+	// now) and passes the level instead; the boolean is still "was recently hit by a player".
 	@Override
-	protected void dropCustomDeathLoot(DamageSource damageSource, int lootingMultiplier, boolean allowDrops) {
-		super.dropCustomDeathLoot(damageSource, lootingMultiplier, allowDrops);
+	protected void dropCustomDeathLoot(ServerLevel level, DamageSource damageSource, boolean allowDrops) {
+		super.dropCustomDeathLoot(level, damageSource, allowDrops);
 		if (!allowDrops) {
 			return;
 		}

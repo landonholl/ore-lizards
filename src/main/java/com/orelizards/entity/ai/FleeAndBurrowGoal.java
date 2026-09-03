@@ -190,10 +190,10 @@ public class FleeAndBurrowGoal extends Goal {
 			return false;
 		}
 		this.cursor.set(x, y, z);
-		if (!level.getBlockState(this.cursor).isPathfindable(level, this.cursor, PathComputationType.LAND)) {
+		if (!level.getBlockState(this.cursor).isPathfindable(PathComputationType.LAND)) {
 			return false;
 		}
 		this.cursor.set(x, y + 1, z);
-		return level.getBlockState(this.cursor).isPathfindable(level, this.cursor, PathComputationType.LAND);
+		return level.getBlockState(this.cursor).isPathfindable(PathComputationType.LAND);
 	}
 }
