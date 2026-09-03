@@ -4,26 +4,83 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 
+/**
+ * <p>Tint colors are measured, not eyeballed: each one is the mean of every pixel in that mineral's
+ * solid block texture from the 1.20.1 client jar. Not the <em>ore</em> block, which is mostly its
+ * stone matrix and averages out grey. For the three metals that have one, the <em>raw</em> block is
+ * used ({@code raw_iron_block}, {@code raw_gold_block}, {@code raw_copper_block}), since raw metal
+ * is what those variants actually drop and it looks nothing like the refined bar - raw iron is a
+ * tan-brown, where an iron block is near-white. The remaining five have no raw form, so they come
+ * from {@code coal_block}, {@code redstone_block}, {@code lapis_block}, {@code diamond_block} and
+ * {@code emerald_block}. The mean is used rather than the most common pixel because it is what the
+ * block reads as at a glance, once its speckling blurs together.
+ *
+ * <p>These land on the model almost exactly as written: the tint multiplies the shard texture,
+ * whose pixels average 229/255, and the eye texture, which averages 252/255 - so there is no
+ * meaningful darkening to compensate for. Note the emissive pass then adds another
+ * {@code GLOW_STRENGTH} of the same color on top, so what finally reaches the screen is brighter
+ * and less saturated than the value here; that knob, not these, is what to turn if the glow washes
+ * the hues out.
+ */
 public enum OreVariant {
-	COAL(0x2B2B2B, Items.COAL, 0),
-	IRON(0xB8B1AA, Items.RAW_IRON, 10),
-	GOLD(0xFFED00, Items.RAW_GOLD, 10),
-	REDSTONE(0x9C0D0D, Items.REDSTONE, 10),
-	LAPIS(0x1A51B8, Items.LAPIS_LAZULI, 10),
-	DIAMOND(0x54BFD9, Items.DIAMOND, 25),
-	EMERALD(0x30A758, Items.EMERALD, 25),
-	COPPER(0xA75A2C, Items.RAW_COPPER, 10);
+	COAL(0x101010, Items.COAL, 0, DropTier.BULK),
+	IRON(0xA6886B, Items.RAW_IRON, 10, DropTier.BULK),
+	GOLD(0xDEA92F, Items.RAW_GOLD, 10, DropTier.PRECIOUS),
+	REDSTONE(0xB01905, Items.REDSTONE, 10, DropTier.BULK),
+	LAPIS(0x1F438C, Items.LAPIS_LAZULI, 10, DropTier.BULK),
+	DIAMOND(0x62EDE4, Items.DIAMOND, 25, DropTier.PRECIOUS),
+	EMERALD(0x2ACB58, Items.EMERALD, 25, DropTier.PRECIOUS),
+	// The one variant not a straight mean of its texture. raw_copper_block is speckled with green
+	// oxidation - a third of its pixels sit at hues of 46 to 161 degrees - which dragged the mean
+	// to an olive-leaning 0x9A6A4F (hue 22). This is the mean of just its copper-hued pixels
+	// (hue 10-40, saturation >= 0.35), which is the colour the block actually reads as: hue 15,
+	// noticeably more orange.
+	COPPER(0xB0664D, Items.RAW_COPPER, 10, DropTier.BULK);
+
+	/**
+	 * How much a variant drops. Split in two because the cheap ores are only worth killing for if
+	 * you get a proper handful, whereas the valuable ones would be worth killing for at any amount -
+	 * so those pay out smaller, with an occasional windfall instead.
+	 */
+	private enum DropTier {
+		/** Coal, iron, redstone, lapis, copper. */
+		BULK(4, 6, 0),
+		/** Gold, diamond, emerald. */
+		PRECIOUS(2, 4, 2);
+
+		/** What a {@link #jackpotChancePercent} roll pays out, in place of the normal range. */
+		private static final int JACKPOT_COUNT = 6;
+
+		private final int minCount;
+		private final int maxCount;
+		private final int jackpotChancePercent;
+
+		DropTier(int minCount, int maxCount, int jackpotChancePercent) {
+			this.minCount = minCount;
+			this.maxCount = maxCount;
+			this.jackpotChancePercent = jackpotChancePercent;
+		}
+
+		private int rollCount(RandomSource random) {
+			if (this.jackpotChancePercent > 0 && random.nextInt(100) < this.jackpotChancePercent) {
+				return JACKPOT_COUNT;
+			}
+			return this.minCount + random.nextInt(this.maxCount - this.minCount + 1);
+		}
+	}
 
 	private final int tintColor;
 	private final Item dropItem;
 	// Weight used only when picking a variant for a lizard that spawned on deepslate:
 	// coal (0) never spawns there, diamond/emerald are weighted well above the rest.
 	private final int deepslateWeight;
+	private final DropTier dropTier;
 
-	OreVariant(int tintColor, Item dropItem, int deepslateWeight) {
+	OreVariant(int tintColor, Item dropItem, int deepslateWeight, DropTier dropTier) {
 		this.tintColor = tintColor;
 		this.dropItem = dropItem;
 		this.deepslateWeight = deepslateWeight;
+		this.dropTier = dropTier;
 	}
 
 	public int getTintColor() {
@@ -32,6 +89,14 @@ public enum OreVariant {
 
 	public Item getDropItem() {
 		return this.dropItem;
+	}
+
+	/**
+	 * How many items this variant drops on death. Bulk ores roll 4-6; the precious ones roll 2-4,
+	 * with a 2% chance of paying out 6 instead.
+	 */
+	public int rollDropCount(RandomSource random) {
+		return this.dropTier.rollCount(random);
 	}
 
 	/**

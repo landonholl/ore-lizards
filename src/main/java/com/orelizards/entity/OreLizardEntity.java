@@ -74,9 +74,19 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// export uses bare "scuttle"/"idle" names, not the "animation.orelizard.X" prefix my earlier
 	// hand-written conversion used, and GeckoLib does an exact string lookup against that key.
 	private static final RawAnimation SCUTTLE_ANIM = RawAnimation.begin().thenLoop("scuttle");
-	// One-shot (not looping) - plays through once then holds, matching the DIGGING_DOWN state.
-	private static final RawAnimation BURROW_ANIM = RawAnimation.begin().thenPlay("burrow");
-	private static final RawAnimation APPEAR_ANIM = RawAnimation.begin().thenPlay("appear");
+	// thenPlayAndHold, not thenPlay: a PLAY_ONCE animation stops its controller on completion,
+	// which drops the model back to its bind pose. Burrow's last frame leaves the body 32 units
+	// (two blocks) underground, so reverting would pop the lizard back up above ground, in full
+	// view, for the tail end of DIGGING_DOWN. Holding the final frame keeps it buried until the
+	// entity is discarded. Appear ends at the rest pose so it's unaffected either way, but the
+	// same treatment removes any chance of a one-tick flicker between it finishing and FLEEING.
+	private static final RawAnimation BURROW_ANIM = RawAnimation.begin().thenPlayAndHold("burrow");
+	private static final RawAnimation APPEAR_ANIM = RawAnimation.begin().thenPlayAndHold("appear");
+
+	// Blend time when switching animations. The walk cycle wants to ease in; the state animations
+	// must not - see registerControllers for why.
+	private static final int MOVEMENT_TRANSITION_TICKS = 5;
+	private static final int STATE_TRANSITION_TICKS = 0;
 
 	// Spawn band: high enough to reach the stone layer (deepslate takes over below Y=-8), but
 	// still required to sit well under the terrain surface so it stays a cave mob.
@@ -106,7 +116,18 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// transition into FLEEING.
 	private static final int ERUPT_DURATION_TICKS = 20;
 	private static final int FLEE_DURATION_TICKS = 260;
+	// Longer than the 20-tick burrow animation on purpose; the animation holds its last frame two
+	// blocks underground, so the extra ticks are out of sight and just leave the lizard hittable
+	// for a moment longer while it escapes.
 	private static final int DIG_DURATION_TICKS = 30;
+
+	// A light spark trail so a lizard you've startled stays trackable across a dark cave instead of
+	// vanishing the moment it rounds a corner. One particle every few ticks is enough to follow -
+	// this is meant to read as a glinting ore trail, not a firework display.
+	private static final int SPARK_INTERVAL_TICKS = 3;
+	// Roughly mid-body on a 0.6-high entity, so sparks come off the ore rather than the floor.
+	private static final double SPARK_Y_OFFSET = 0.35;
+	private static final double SPARK_SPREAD = 0.2;
 
 	private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
 
@@ -116,6 +137,12 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 
 	public OreLizardEntity(EntityType<? extends OreLizardEntity> type, Level level) {
 		super(type, level);
+		// Step over full blocks instead of jumping them. MoveControl only triggers a jump when the
+		// height of the next waypoint exceeds maxUpStep, and the default 0.6 means every one-block
+		// rise in a cave floor became a jump - which kills the mob's momentum and made the flee
+		// speed boost read as much slower than it is. 1.0 is what vanilla gives horses and ravagers.
+		// The same value feeds WalkNodeEvaluator, so paths now route over those rises as steps too.
+		this.setMaxUpStep(1.0F);
 		this.goalSelector.addGoal(0, new FleeAndBurrowGoal(this));
 		this.goalSelector.addGoal(1, new FloatGoal(this));
 		// Look-flag goals, not move-flag - these run concurrently with fleeing rather than
@@ -251,12 +278,34 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (this.level().isClientSide) {
 			return;
 		}
+		this.emitSparkTrail();
 		switch (this.getLizardState()) {
 			case BURIED -> this.tickBuried();
 			case ERUPTING -> this.tickErupting();
 			case FLEEING -> this.tickFleeing();
 			case DIGGING_DOWN -> this.tickDiggingDown();
 		}
+	}
+
+	/**
+	 * Sparks off the lizard whenever it's out of the ground - erupting, fleeing or digging back
+	 * down. Gated on the state rather than on movement so it doesn't cut out when the mob is briefly
+	 * cornered or pathing round an obstacle, which is exactly when you're most likely to lose track
+	 * of it. Never runs while BURIED: a dormant lizard throwing sparks would give the whole thing
+	 * away. Runs ahead of the state switch so a lizard that discards itself this tick can't emit
+	 * from beyond the grave.
+	 */
+	private void emitSparkTrail() {
+		if (this.getLizardState() == State.BURIED || this.tickCount % SPARK_INTERVAL_TICKS != 0) {
+			return;
+		}
+		if (!(this.level() instanceof ServerLevel serverLevel)) {
+			return;
+		}
+		// Zero speed: the sparks are left hanging where the lizard was rather than being thrown, so
+		// the trail marks its actual path. FireworkParticles fade and twinkle out on their own.
+		serverLevel.sendParticles(ParticleTypes.FIREWORK, this.getX(), this.getY() + SPARK_Y_OFFSET, this.getZ(),
+				1, SPARK_SPREAD, SPARK_SPREAD, SPARK_SPREAD, 0.0);
 	}
 
 	private void tickBuried() {
@@ -434,9 +483,9 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		if (!allowDrops) {
 			return;
 		}
-		ItemLike dropItem = this.getOreVariant().getDropItem();
-		int count = 1 + this.random.nextInt(3);
-		this.spawnAtLocation(new ItemStack(dropItem, count));
+		OreVariant variant = this.getOreVariant();
+		ItemLike dropItem = variant.getDropItem();
+		this.spawnAtLocation(new ItemStack(dropItem, variant.rollDropCount(this.random)));
 	}
 
 	@Override
@@ -446,16 +495,33 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 
 	@Override
 	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
-		controllers.add(new AnimationController<>(this, "movement", 5, state -> {
+		controllers.add(new AnimationController<>(this, "movement", MOVEMENT_TRANSITION_TICKS, state -> {
+			AnimationController<OreLizardEntity> controller = state.getController();
 			// State checks take priority over the generic movement check below, so burrow/appear
 			// can't get interrupted by some incidental movement source during those windows.
 			State lizardState = state.getAnimatable().getLizardState();
+
+			// Both state animations start with a zero-tick transition. GeckoLib otherwise spends
+			// transitionLength ticks blending from whatever pose the model is currently in into
+			// the new animation's first frame, and only starts the animation's own clock once
+			// that blend finishes. For "appear" that was ruinous: its first frame puts the body
+			// 13 units (0.81 blocks) underground, but the pose it blends from is the rest pose at
+			// ground level - so the lizard became visible standing on top of the block, slid down
+			// into it over a quarter second, and only then began erupting. "burrow" starts from
+			// the rest pose so it never sank, but it still stood there motionless for those five
+			// ticks before digging. Starting on frame one also makes the animation lengths line
+			// up with the state timers: appear is exactly 1 second, as is ERUPT_DURATION_TICKS,
+			// where previously the transition ate a quarter of the eruption.
 			if (lizardState == State.DIGGING_DOWN) {
+				controller.transitionLength(STATE_TRANSITION_TICKS);
 				return state.setAndContinue(BURROW_ANIM);
 			}
 			if (lizardState == State.ERUPTING) {
+				controller.transitionLength(STATE_TRANSITION_TICKS);
 				return state.setAndContinue(APPEAR_ANIM);
 			}
+
+			controller.transitionLength(MOVEMENT_TRANSITION_TICKS);
 			// Driven by actual velocity/limb-swing (GeckoLib's isMoving(), same signal vanilla
 			// mobs use for their walk cycle) rather than our own isFleeing() flag, so it scuttles
 			// whenever it's genuinely moving for any reason - fleeing, knockback, pushed by
