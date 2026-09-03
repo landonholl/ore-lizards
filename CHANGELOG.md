@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Movement speed reduced by 45%**, from a base `MOVEMENT_SPEED` of 0.3 to 0.165. The cut is made
+  on the base attribute rather than on `FLEE_SPEED_BONUS`, which is the other place a speed change
+  could go. That boost is a `MULTIPLY_TOTAL` modifier, so lowering the base carries the reduction
+  into the flee as well: fleeing goes from 0.5775 to 0.317625, also exactly 45% down, while the
+  1.925x ratio between fleeing and walking is left intact. Cutting the boost instead would have
+  slowed only the escape and left the mob moving at full speed everywhere else, flattening the
+  difference between a lizard that has been startled and one that is merely wandering. Nothing
+  downstream needed retuning: `FleeAndBurrowGoal`'s scan distances are in blocks and its repath
+  interval is in ticks, so a slower lizard simply covers less ground between repaths, and
+  `playStepSound` is paced by distance travelled so the scuttle sound slows to match on its own.
+
 ## 1.2.0
 
 A persistence pass. Everything here is about a lizard still being the lizard you left: the ore it
