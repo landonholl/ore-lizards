@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.2.0+mc1.21.7
+
+A port of 1.2.0 to Minecraft 1.21.7 (Fabric Loader 0.19.5, Fabric API 0.129.0, GeckoLib 5.2.1,
+Java 21). It is the `## 1.2.0+mc1.21.8` port below with the 1.21.7 builds of its two dependencies
+swapped in and nothing else: 1.21.6, 1.21.7 and 1.21.8 are bug-fix releases of one game drop, so every
+source file, every asset and the build script are byte-for-byte the 1.21.8 branch's. The whole of that
+section - the `ValueInput`/`ValueOutput` save data, the render-pipeline rework leaving `RenderType.eyes`
+in place - and of the `## 1.2.0+mc1.21.5`, `## 1.2.0+mc1.21.4` and `## 1.2.0+mc1.21.1` sections applies
+here unchanged and is not repeated. The mob is meant to behave exactly as it does on 1.20.1. What
+follows is what was checked to be sure the dependency swap really was the whole port.
+
+### Changed
+
+- **Dependencies only.** `minecraft_version` 1.21.7, Fabric API `0.129.0+1.21.7` (the newest build
+  Modrinth lists for 1.21.7), GeckoLib `5.2.1` (Modrinth version `OT6teuDe`, the build published for
+  1.21.7 and 1.21.8), `mod_version` `1.2.0+mc1.21.7`. `fabric.mod.json` declares `minecraft` as
+  `>=1.21.7 <=1.21.8` because that is the range this GeckoLib build is published for - unlike the 1.21.8
+  branch, whose GeckoLib 5.2.2 exists only for 1.21.8, this jar can be dropped into a 1.21.8 instance
+  too. GeckoLib 5.2.1 itself asks for `minecraft >=1.21.7` and `fabric-api >=0.128.0+1.21.7`, both
+  satisfied.
+
+### Checked and unchanged
+
+- **GeckoLib 5.2.1 is 5.2.2 everywhere this mod touches it.** The 1.21.8 section explains why compiling
+  clean is a weak check for the tint layer, so the same comparison was repeated against the
+  Loom-remapped 5.2.1 and 5.2.2 jars: every method signature of `GeoRenderLayer`, `PerBoneRender`,
+  `GeoRenderer`, `GeoRenderState`, `GeoEntityRenderer`, `GeoModel`, `DataTicket`, `AnimationController`,
+  `AnimationTest` and `AutoGlowingGeoLayer` is identical, and so is the constant-pool-normalised bytecode
+  of every one of those classes bar `GeoModel`, whose only difference is the loop shape of the animation
+  lookup over `getAnimationResourceFallbacks` - a method with one file to search here and the same
+  result either way. So the per-bone-task ordering, the register-only-when-drawn guard and the deferred
+  `eyes` swap rest on exactly the mechanics they were written against.
+- **No nested mclib.** `META-INF/jars/` is absent from the 5.2.1 jar as it was from 5.2.2, so there is
+  still no `libs/` directory and no `implementation files(...)` line.
+- **The source compiles with zero changes against 1.21.7**, which is the direct confirmation that
+  nothing this mod calls moved between 1.21.7 and 1.21.8 - `ValueInput`/`ValueOutput`,
+  `RenderType.eyes`, `hurtServer`, `EntitySpawnReason`, `Item.Properties.setId` and the rest are all as
+  the 1.21.8 section describes.
+
+### Not verified
+
+- **Rendering, exactly as the 1.21.8 and 1.21.5 sections list it** - the same layer code compiled
+  against 1.21.7 and GeckoLib 5.2.1, exercised only on a headless dedicated server (initialises,
+  reaches `Done`, `/summon orelizards:ore_lizard` succeeds, stops cleanly, no `orelizards` or `geckolib`
+  stack trace; GeckoLib's harmless `EntityRendererMixin` target WARN is present in 5.2.1 too). The
+  Iris/OptiFine `gbuffers_spidereyes` question from the 1.21.8 section applies unchanged.
+
 ## 1.2.0+mc1.21.8
 
 A port of 1.2.0 to Minecraft 1.21.8 (Fabric Loader 0.19.5, Fabric API 0.136.1, GeckoLib 5.2.2,
