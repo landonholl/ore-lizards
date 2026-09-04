@@ -75,10 +75,12 @@ public class OreTintLayer extends GeoLayerRenderer<OreLizardEntity> {
 			float limbSwing, float limbSwingAmount, float partialTick, float ageInTicks, float netHeadYaw, float headPitch) {
 		// A dormant lizard is meant to be undetectable, and a glow is exactly the thing that would
 		// give it away. GeckoLib 3 offers no help here: unlike 4.x, which skips the whole render
-		// for an invisible entity, it draws the body itself at alpha 0 (the cutout shader discards
-		// it) and then runs the layers regardless. Both passes below draw at full alpha, so
-		// without this check a buried lizard would show as a floating, glowing set of shards -
-		// the one failure that breaks the core mechanic outright.
+		// for an invisible entity, it runs every layer regardless of invisibility. Both passes
+		// below draw at full alpha, so without this check a buried lizard would show as a floating,
+		// glowing set of shards - the one failure that breaks the core mechanic outright.
+		// (3.0.32 doesn't even hide the body: it just hands the body pass a vertex alpha of 0,
+		// which 1.17's cutout shader ignores. OreLizardRenderer.render is where that is dealt
+		// with - see the explanation there.)
 		if (animatable.isInvisible()) {
 			return;
 		}

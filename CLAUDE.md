@@ -221,6 +221,16 @@ lizard would be stone. It is the port's one documented behavioural deviation —
 
 ## Repo gotchas
 
+- **GeckoLib 3.0.32 does not skip an invisible entity's render, and on 1.17 vertex alpha cannot save
+  you.** Every other GeckoLib this mod is built against hides an invisible mob for us: 3.0.80 and up
+  wrap the body pass in `if (!isInvisibleTo(player))`, and the 4.x/5.x line returns a null render
+  type. 3.0.32 instead renders the model unconditionally and merely passes a vertex alpha of 0. That
+  is a no-op here, because 1.17's `rendertype_entity_cutout` core shader discards on the *texture's*
+  alpha *before* it multiplies in the vertex color, and the render type does not blend - so a dormant
+  lizard drew fully opaque, and untinted too, since `OreTintLayer` correctly refuses to tint an
+  invisible one. That is the "white visible lizard" bug. `OreLizardRenderer` therefore overrides
+  `render` and returns early when the entity is invisible to the local player. 1.16.5 escapes this
+  only because it predates core shaders and its alpha test is a GL one against the final fragment.
 - **GeckoLib 3.0.x does not remap to Mojang mappings as shipped.** `GeoProjectilesRenderer` has
   two methods that Mojmap gives the same name and descriptor (`getTextureLocation(Entity)` and the
   `EntityRenderer` override, intermediary `method_3931`), which Tiny Remapper treats as unfixable
