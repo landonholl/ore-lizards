@@ -200,8 +200,16 @@ by `Y < -4` (the midpoint of the 1.18+ stone→deepslate blend band), not by sam
   jar-in-jar workaround has nothing to work around.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
-- GeckoLib 3's example mod is enabled in dev unless `-Dgeckolib.disable_examples` is set; it
-  registers a handful of example entities/items. Harmless, but don't mistake them for ours.
+- **GeckoLib ships its own example mod inside the release jar and switches it on in dev.** Its
+  `fabric.mod.json` entrypoints are `software.bernie.example.GeckoLibMod` and `.ClientListener`, and
+  they register whenever `FabricLoader.isDevelopmentEnvironment()` is true. One example replaces the
+  vanilla creeper renderer with a `GeoReplacedEntityRenderer`, which casts `Creeper` to
+  `IAnimatable`, so `runClient` dies with a `ClassCastException` the first time a creeper is drawn -
+  it has nothing to do with our mod. `build.gradle` therefore sets the
+  `geckolib.disable_examples` system property on both run configs. Published jars were never
+  affected, since the examples don't register outside a dev environment. Not every GeckoLib build
+  bundles them: 4.5.4 and every 5.x release here are clean, while 3.0.x, 3.1.40, 4.2, 4.3.1, 4.4.4
+  and 4.8.4 all carry them, so check before assuming a new version needs the property.
 - `ore-lizards/` is a stray embedded git repo (a gitlink, no `.gitmodules`) pointing at this same
   remote. Ignore it; don't edit anything inside it.
 - `orelizards.mixins.json` is wired up but has no mixins yet.
