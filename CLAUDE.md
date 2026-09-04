@@ -235,8 +235,16 @@ below zero. There is no stone-vs-deepslate decision on this version (see `DEEPSL
   workaround has nothing to work around.
 - GeckoLib is pulled through the Modrinth maven proxy by project/version ID to sidestep its
   group-id churn — the coordinate in `gradle.properties` is opaque on purpose.
-- GeckoLib 3's example mod is enabled in dev unless `-Dgeckolib.disable_examples` is set; it
-  registers a handful of example entities/items. Harmless, but don't mistake them for ours.
+- **GeckoLib ships its own example mod inside the release jar and switches it on in dev.** Its
+  `fabric.mod.json` entrypoints are `software.bernie.example.GeckoLibMod` and `.ClientListener`, and
+  they register whenever `FabricLoader.isDevelopmentEnvironment()` is true. One example replaces the
+  vanilla creeper renderer with a `GeoReplacedEntityRenderer`, which casts `Creeper` to
+  `IAnimatable`, so `runClient` dies with a `ClassCastException` the first time a creeper is drawn -
+  it has nothing to do with our mod. `build.gradle` therefore sets the
+  `geckolib.disable_examples` system property on both run configs. Published jars were never
+  affected, since the examples don't register outside a dev environment. Not every GeckoLib build
+  bundles them: 4.5.4 and every 5.x release here are clean, while 3.0.x, 3.1.40, 4.2, 4.3.1, 4.4.4
+  and 4.8.4 all carry them, so check before assuming a new version needs the property.
 - **1.16.5 has no SLF4J.** `OreLizardsMod.LOGGER` is a Log4j `Logger` (`LogManager.getLogger`);
   Minecraft only started shipping SLF4J in 1.18.
 - **Fabric API 0.42's `EntityRendererRegistry` is in module `fabric-renderer-registries-v1`**, package
