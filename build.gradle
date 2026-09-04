@@ -29,7 +29,7 @@ repositories {
 // that ship a bundled server jar (1.18+); on anything older Loom aborts setup with "Only Minecraft
 // versions using a bundled server jar can be split". So the same two source sets are declared by
 // hand on top of the merged jar, mirroring what Loom's split mode does internally: the layout
-// (src/main/java, src/client/java) and the single-mod grouping are unchanged, the client set
+// (src/main/java, src/client/java) is unchanged, the client set
 // compiles against main and rides along in the jar, and runClient launches from it. The one thing
 // lost is the compile-time guarantee that src/main never touches a client class - the merged jar
 // has them all - so that rule is now kept by hand (see CLAUDE.md).
@@ -41,12 +41,18 @@ sourceSets {
 }
 
 loom {
-	mods {
-		orelizards {
-			sourceSet sourceSets.main
-			sourceSet sourceSets.client
-		}
-	}
+	// No mods { orelizards { sourceSet ... } } grouping here, deliberately. It would tell Fabric
+	// Loader that this mod spans every source set output - build/classes/java/main,
+	// build/resources/main, build/classes/java/client, build/resources/client - and Fabric API
+	// 0.4.x builds a mod's resource pack from ModContainer.getRootPath(), which is single-valued.
+	// Loader then warns "getRootPath access for orelizards with multiple paths, returning only one"
+	// and hands it a classes directory, so assets/ is invisible: the spawn egg model fails to load
+	// and GeckoLib throws "orelizards:geo/entity/ore_lizard.geo.json: Could not find model" the
+	// first time a lizard is rendered. Without the grouping the mod is discovered from its
+	// fabric.mod.json alone, so its one root is build/resources/main and the assets resolve. The
+	// client classes still reach the dev run through the client run config below and the jar
+	// through the jar tasks, so nothing else changes. Fabric API 0.5+ (1.18.2 and up) stopped using
+	// the single-valued call, which is why only 1.16.5 and 1.17.1 need this.
 
 	// GeckoLib publishes its own example mod inside the release jar - entrypoints
 	// software.bernie.example.GeckoLibMod and .ClientListener - and registers it whenever
@@ -207,3 +213,5 @@ java {
 sourcesJar {
 	from sourceSets.client.allSource
 }
+
+loom { runs { client { programArgs '--server', '127.0.0.1', '--port', '25599' } } }
