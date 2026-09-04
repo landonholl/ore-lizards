@@ -159,16 +159,29 @@ before layers run, keeping the model-space matrix in a private field.
 
 ### GeckoLib asset contract
 
-**Keyframe format is a porting hazard.** Blockbench writes keyframes as
-`{"post": {"vector": [...]}, "lerp_mode": "catmullrom"}`, which GeckoLib 4 and 5 read natively. The
-GeckoLib 3 branches (1.16.5, 1.17.1, 1.18.2, 1.19.2) cannot - that parser only accepts a bare
-`[x,y,z]` or `{"vector": [...]}` - and given this shape they read zero keyframes and animate nothing
-with no error at all. Those branches rewrite the file in `processResources`, so their copy of the
-asset stays byte-identical to this one and a re-export can be copied straight across. Don't
-"simplify" the exported keyframes here to suit them, and don't assume a silent animation failure on
-an old branch is a code bug.
+**Keyframe format and asset layout are the two big porting hazards, and all three failure modes lie.**
+Blockbench writes keyframes as `{"post": {"vector": [...]}, "lerp_mode": "catmullrom"}`. Keep this
+asset exactly as exported: every port branch holds a byte-identical copy so a re-export can be copied
+straight across, and each branch that needs a different shape rewrites it in `processResources` at
+build time rather than editing the file. Three rules, none of which fails in a way that points at
+itself:
 
-Three files must agree, and mismatches fail *silently* (log spam at most):
+| GeckoLib | Accepts | Branches | Failure if wrong |
+|---|---|---|---|
+| 3.x | `{"vector": [...]}`, no `pre`/`post` | 1.16.5, 1.17.1, 1.18.2, 1.19.2 | **Silent.** The controller reports the animation running and its clock advancing while the model sits in its bind pose - a statue. |
+| 4.2 | bare `[x,y,z]` under `pre`/`post` | 1.19.4 | Throws, **aborting the whole client resource reload**, so `FontManager` builds no glyph providers and *every glyph in the game renders as an empty box*. Reads as a broken font or asset cache. |
+| 4.3.1+, 5.x | the exported form as-is | everything else | - |
+
+Separately, **GeckoLib 5 relocated its scan roots**: `com.geckolib.cache.GeckoLibResources` reads only
+`assets/<ns>/geckolib/models` and `assets/<ns>/geckolib/animations`, keying each entry by the path with
+that prefix and the `.geo`/`.animation`/`.json` suffixes stripped - so the id is the bare
+`orelizards:entity/ore_lizard`. Given the GeckoLib 4 layout it loads zero models and draws its own
+`geckolib:internal/missingno` placeholder, a flat magenta quad. Textures are ordinary Minecraft assets
+and stay at `textures/entity/`. All eight GeckoLib 5 branches (1.21.5 through 26.2) move the two files.
+
+Two further traps worth knowing: **GeckoLib 3.0.32 alone** does not skip rendering an invisible entity
+(1.17.1 gates this in its renderer), and after moving any resource a plain incremental
+`./gradlew build` exits 0 while shipping a **stale jar** - delete `build/resources` and `build/libs`.
 
 - Animation names in `RawAnimation.begin().thenPlay("...")` must exactly match the top-level keys
   in [ore_lizard.animation.json](src/main/resources/assets/orelizards/animations/entity/ore_lizard.animation.json)
