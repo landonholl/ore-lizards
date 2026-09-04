@@ -179,6 +179,16 @@ by `Y < -4` (the midpoint of the 1.20.x stone→deepslate blend band, unchanged 
 
 ## Repo gotchas
 
+- **GeckoLib ships its own example mod inside the release jar and switches it on in dev.** Its
+  `fabric.mod.json` entrypoints are `software.bernie.example.GeckoLibMod` and `.ClientListener`, and
+  they register whenever `FabricLoader.isDevelopmentEnvironment()` is true. One example replaces the
+  vanilla creeper renderer with a `GeoReplacedEntityRenderer`, which casts `Creeper` to
+  `IAnimatable`, so `runClient` dies with a `ClassCastException` the first time a creeper is drawn -
+  it has nothing to do with our mod. `build.gradle` therefore sets the
+  `geckolib.disable_examples` system property on both run configs. Published jars were never
+  affected, since the examples don't register outside a dev environment. Not every GeckoLib build
+  bundles them: 4.5.4 and every 5.x release here are clean, while 3.0.x, 3.1.40, 4.2, 4.3.1, 4.4.4
+  and 4.8.4 all carry them, so check before assuming a new version needs the property.
 - `libs/mclib-20.jar` is checked in as a workaround: GeckoLib ships it jar-in-jar, but Loom 1.17's
   dev-launch classpath doesn't pick the nested jar up, so `runClient` fails with
   `NoClassDefFoundError` on `software.bernie.geckolib.util.JsonUtil` without it. GeckoLib 4.3.1
