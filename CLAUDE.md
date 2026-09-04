@@ -12,7 +12,7 @@ walks near, flees, then burrows back down. GeckoLib 4.8.4 drives its model/anima
 
 This checkout (`main`) is Minecraft **1.20.1** and the **behavioural source of truth**. Every other
 supported version lives on a branch named exactly after it (`1.21.1`, `1.18.2`, `26.2`, ...), each a
-complete standalone project with `mod_version=1.2.0+mc<version>`. Rules that keep this workable:
+complete standalone project with `mod_version=1.2.1+mc<version>`. Rules that keep this workable:
 
 - Behaviour changes are made on `main` first, then re-applied to each branch. A version branch is
   never authoritative for what the mob does; its top `CHANGELOG.md` section documents only what had

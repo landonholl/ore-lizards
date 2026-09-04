@@ -4,7 +4,7 @@ Source code for the minecraft mod: Ore Lizards
 ## Supported Minecraft versions
 
 One git branch per Minecraft version, named after the version. Every branch is the same mod
-(version `1.2.0+mc<version>`) ported to that game version's Fabric, Mojang mappings and GeckoLib
+(version `1.2.1+mc<version>`) ported to that game version's Fabric, Mojang mappings and GeckoLib
 release; `main` (1.20.1) is the behavioural source of truth and each branch's `CHANGELOG.md` top
 section lists only what had to differ there.
 
@@ -32,4 +32,4 @@ section lists only what had to differ there.
 | `26.2` | 26.2 | 5.5.4 | 25 | Unobfuscated Minecraft: non-remapping Loom plugin. |
 
 Build any of them with `./gradlew build` from a checkout of that branch; the jar lands in
-`build/libs/orelizards-1.2.0+mc<version>.jar`.
+`build/libs/orelizards-1.2.1+mc<version>.jar`.
