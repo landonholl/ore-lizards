@@ -80,6 +80,60 @@ processResources {
 	filesMatching('fabric.mod.json') {
 		expand 'version': project.version
 	}
+
+	// Downgrade the animation keyframes to the shape GeckoLib 4.2 can read. Blockbench writes each
+	// keyframe as {"post": {"vector": [x,y,z]}, "lerp_mode": "catmullrom"}; GeckoLib 4.2's
+	// BakedAnimationsAdapter.getTripletObj reads pre/post with GsonHelper.getAsJsonArray(obj, "post"),
+	// so the member has to be a bare [x,y,z] array - handed the object form it throws
+	// "Expected post to be a JsonArray, was an object". 4.3 added the array-or-{"vector":...} branch
+	// that every later 4.x keeps, so only this branch needs the rewrite. The failure is not a quiet
+	// one and does not look like an animation bug: the JsonSyntaxException aborts the whole client
+	// resource reload ("Caught error loading resourcepacks, removing all selected resourcepacks"), so
+	// FontManager never builds its glyph providers and every glyph in the game renders as an empty
+	// box. lerp_mode is dropped because 4.x ignores it outright. Done here rather than by editing the
+	// asset so src/main/resources stays byte-identical to main's - a future re-export can be copied
+	// straight across without silently breaking this.
+	doLast {
+		File animFile = new File(destinationDir, 'assets/orelizards/animations/entity/ore_lizard.animation.json')
+		if (animFile.exists()) {
+			def json = new groovy.json.JsonSlurper().parseText(animFile.text)
+			int flattened = flattenKeyframeVectors(json)
+			animFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))
+			logger.lifecycle("GeckoLib 4.2 keyframe downgrade: flattened ${flattened} keyframe vector(s) in ${animFile.name}")
+		}
+	}
+}
+
+/**
+ * Replaces every "pre"/"post" member holding a {"vector": [x,y,z]} object with the bare [x,y,z] array,
+ * and drops a stray "lerp_mode" alongside it. Returns how many members were rewritten. Anything already
+ * in a shape GeckoLib 4.2 accepts - a pre/post that is already an array, or a map that carries "vector"
+ * itself, such as the single static value the "idle" animation holds - is left exactly as it is.
+ */
+int flattenKeyframeVectors(Object node) {
+	int count = 0
+	if (node instanceof Map) {
+		if (node.containsKey('pre') || node.containsKey('post')) {
+			for (key in ['pre', 'post']) {
+				def value = node.get(key)
+				if (value instanceof Map && value.containsKey('vector')) {
+					node.put(key, value.get('vector'))
+					count++
+				}
+			}
+			node.remove('lerp_mode')
+			return count
+		}
+		node.remove('lerp_mode')
+		for (value in new ArrayList(node.values())) {
+			count += flattenKeyframeVectors(value)
+		}
+	} else if (node instanceof List) {
+		for (value in node) {
+			count += flattenKeyframeVectors(value)
+		}
+	}
+	return count
 }
 
 tasks.withType(JavaCompile).configureEach {

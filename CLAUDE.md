@@ -170,6 +170,18 @@ by `Y < -4` (the midpoint of the stone→deepslate blend band, unchanged from 1.
 
 ## Repo gotchas
 
+- **GeckoLib 4.2 cannot read a modern Blockbench animation export, and the failure does not look like an
+  animation bug.** `BakedAnimationsAdapter.getTripletObj` calls `GsonHelper.getAsJsonArray(obj, "post")`
+  with no object-vs-array branch, so every keyframe's `pre`/`post` has to be a bare `[x, y, z]` array;
+  Blockbench writes `{"post": {"vector": [x, y, z]}, "lerp_mode": "catmullrom"}`. The resulting
+  `JsonSyntaxException` aborts the *entire* client resource reload ("Caught error loading resourcepacks,
+  removing all selected resourcepacks"), so `FontManager` never builds its glyph providers and every glyph
+  in the game renders as an empty box. 4.2 is the only broken 4.x build — 4.3.1 onward branch on object vs.
+  array. `build.gradle` therefore flattens the vectors during `processResources` in a `doLast`
+  (`flattenKeyframeVectors()`), dropping `lerp_mode` because 4.x ignores it anyway; the transform is
+  verified lossless at 110 keyframe times, 115 `pre`/`post` members and 0 mismatches. It is a build-time
+  transform rather than an edited asset on purpose: the source animation JSON stays byte-identical to
+  `main`'s, so a Blockbench re-export can be copied straight across without re-doing the surgery.
 - **GeckoLib ships its own example mod inside the release jar and switches it on in dev.** Its
   `fabric.mod.json` entrypoints are `software.bernie.example.GeckoLibMod` and `.ClientListener`, and
   they register whenever `FabricLoader.isDevelopmentEnvironment()` is true. One example replaces the
