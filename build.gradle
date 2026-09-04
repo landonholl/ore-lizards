@@ -74,6 +74,56 @@ processResources {
 	filesMatching('fabric.mod.json') {
 		expand 'version': project.version
 	}
+
+	// Downgrade the animation keyframes to the shape GeckoLib 3 can read. Blockbench writes each
+	// keyframe as {"post": {"vector": [x,y,z]}, "lerp_mode": "catmullrom"}; GeckoLib 3's
+	// JsonKeyFrameUtils.getKeyFrameVector only accepts a bare [x,y,z] array or {"vector": [x,y,z]}
+	// (plus optional "easing"/"easingArgs"), and it has no concept of pre/post or lerp_mode at all -
+	// grep the jar and neither string is in it. Handed the newer shape it finds no vector, reads
+	// zero keyframes, and animates nothing, silently: the controller still reports the animation as
+	// running with its clock advancing, and the model just sits in its bind pose. That is the
+	// "statue" bug. Every pre/post pair the export emits holds the same vector, so collapsing to
+	// post loses no motion; catmullrom smoothing is lost, leaving GeckoLib 3's linear interpolation.
+	// Done here rather than by editing the asset so src/main/resources stays byte-identical to
+	// main's - a future re-export can be copied straight across without silently breaking this.
+	doLast {
+		File animFile = new File(destinationDir, 'assets/orelizards/animations/entity/ore_lizard.animation.json')
+		if (animFile.exists()) {
+			def json = new groovy.json.JsonSlurper().parseText(animFile.text)
+			int collapsed = downgradeKeyframes(json)
+			animFile.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))
+			logger.lifecycle("GeckoLib 3 keyframe downgrade: collapsed ${collapsed} keyframe(s) in ${animFile.name}")
+		}
+	}
+}
+
+/**
+ * Rewrites every {"post": ..., "lerp_mode": ...} keyframe in place as {"vector": [x,y,z]}, and drops
+ * a stray "lerp_mode" from anything else. Returns how many keyframes were rewritten. Anything already
+ * in a shape GeckoLib 3 understands - a bare array, or a map that carries "vector" itself, such as
+ * the single static value the "idle" animation holds - is left exactly as it is.
+ */
+int downgradeKeyframes(Object node) {
+	int count = 0
+	if (node instanceof Map) {
+		if (node.containsKey('post')) {
+			def post = node.remove('post')
+			node.remove('pre')
+			node.remove('lerp_mode')
+			node.clear()
+			node.put('vector', (post instanceof Map) ? post.get('vector') : post)
+			return 1
+		}
+		node.remove('lerp_mode')
+		for (value in new ArrayList(node.values())) {
+			count += downgradeKeyframes(value)
+		}
+	} else if (node instanceof List) {
+		for (value in node) {
+			count += downgradeKeyframes(value)
+		}
+	}
+	return count
 }
 
 tasks.withType(JavaCompile).configureEach {
