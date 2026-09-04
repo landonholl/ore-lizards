@@ -1,5 +1,193 @@
 # Changelog
 
+## 1.3.0
+
+Ore Lizards are now placed for you rather than left to chance. Everything below follows from one
+measurement: vanilla spawning was working correctly and players still never met the mob.
+
+### Added
+
+- **An encounter director** (`EncounterDirector`), server-side, that tracks how long each player
+  spends genuinely exploring underground and, on a randomised 20-60 minute budget, places one
+  dormant lizard ahead on their path, in the cave they are standing in, so they walk into it.
+
+  The motivation was measured, not guessed. A headless run against real worldgen produced **43 valid
+  lizard placements per 400,000 simulated attempts**, present in the plains, dripstone-cave and
+  lush-cave spawn lists - which is exactly what a weight of 1 in a rare category is meant to look
+  like. The registration, the placement predicate and the biome entries were all correct. Spawning
+  worked; discovery did not, for four reasons that compound. `MobCategory.AMBIENT` allots roughly
+  **15 spawn slots across the ~289 loaded chunks** around a player and shares them with bats. A
+  dormant lizard is invisible, silent and emits no particles, so it has no discovery affordance
+  beyond being stood next to. The wake radius is 5 blocks. And worldgen puts some lizards inside
+  sealed pockets of stone, where they are unreachable forever while still holding a cap slot. No
+  weight fixes any of that, because a spawn weight cannot express "somewhere the player will
+  actually walk".
+
+  The cadence is deliberately wide rather than tight. A narrow band produces a rhythm players
+  pattern-match, and the moment somebody works out the interval, every encounter they have already
+  had retroactively reads as scripted; a 3x spread cannot be felt as a schedule. The first budget of
+  each server run is seeded with a uniform 0-20 minute head start, so a short session is not a
+  guaranteed miss - expected first encounter is around 30 minutes of underground time rather than
+  40, while the long-run rate is unchanged. Underground time only accrues while the player is
+  actually moving (0.5 blocks/s, so sneaking counts and AFK does not) and actually below ground, so
+  the budget measures exploring rather than wall-clock time.
+
+  Placement is a 16-direction sweep from 32 blocks inwards, the same shape `FleeAndBurrowGoal` uses
+  to flee, scored on how well the candidate lines up with the player's smoothed heading, how close
+  it is to 24 blocks out, how far it is vertically, and whether it sits 2-4 blocks *off* the path
+  line. That lateral offset is not decoration: the trigger range is still 5 blocks, so a head-on
+  placement means a sprinting player is on top of the lizard before the 20-tick `appear` animation
+  has finished. The eruption has to read as something coming at them from the side.
+
+  Candidates are rejected in cost order, and the cheap filters matter more than the expensive one. A
+  candidate within 12 blocks of anywhere the player has recently stood is dropped, because the tell
+  a sight test cannot catch is "I mined that floor twenty seconds ago and it was solid" - and that
+  filter also quietly covers walking backwards and retracing a passage. Chunks with more than ten
+  minutes of accumulated inhabited time are dropped as explored ground or somebody's base. Only then
+  is line of sight tested, and only lazily, best candidate first. Every one of those reads is gated
+  behind `hasChunksAt`, because `getBlockState`, `getHeight` and `clip` all generate the chunk on the
+  server thread if it is missing.
+
+  **The sight test is the opposite of what was planned.** The design said "never in the player's
+  line of sight", on the theory that the player should walk into the encounter rather than watch it
+  appear on screen. The first playtest placed two lizards, and the player saw neither: both landed
+  hidden from view, both were underwater - one under three blocks of it - and both drowned within
+  seconds of being placed. That is not two coincidences. Underground, "16-32 blocks away and out of
+  view" is very often exactly "in a different cave pocket behind a wall", which is to say somewhere
+  the player will never walk, and a flooded pocket is as hidden as any. Concealment was also buying
+  nothing, because `finalizeSpawn` runs `setInvisible(true)` before `addFreshEntity`, so no client is
+  ever sent a visible frame wherever the lizard goes. A candidate is therefore now valid only if a
+  ray from the player's eye to the site is *clear*: `Level.clip` with `ClipContext.Block.VISUAL` and
+  `ClipContext.Fluid.NONE` must return `MISS`. Open air between the two is the cheapest available
+  proof that the site is in the player's cave. `VISUAL` rather than `COLLIDER` because `COLLIDER`
+  reports glass as a wall, and a site seen through a window is plainly reachable; `Fluid.NONE` so a
+  flooded stretch of floor between the player and a dry ledge does not hide it. The look direction
+  is not consulted - the alignment score already prefers ahead, and a passage behind the player is
+  as much their cave as one in front - and the behind-the-eye-plane pre-filter that went with the
+  old rule is gone. An unloaded chunk anywhere along the ray still rejects the candidate.
+
+  A site must also be dry, and that is now enforced where the floor is found rather than only
+  where it is accepted. Vanilla's `LiquidBlock.isPathfindable` is `!fluid.is(LAVA)` regardless of
+  the path type asked for, so `CaveTerrain.isStandable` was passing a column of water over stone as
+  walkable floor; it now requires an empty fluid state at the feet and the head as well.
+  `isDirectorSiteValid` keeps its own fluid check as belt-and-braces, so the placement rule is safe
+  whichever floor-finder feeds it. `FleeAndBurrowGoal` shares `isStandable` and gains from the
+  change: its sweep used to be perfectly willing to send a fleeing lizard *into* a pool, where a
+  0.6-block mob wades and reads as having given up. A dormant lizard placed underwater takes its
+  first drowning tick 320 ticks (16 s) after placement and is dead by 400, which is what turned
+  the playtest's placements into the accounting problem below.
+
+  Each player has at most one pending lizard, and the order its fate is decided in matters. The
+  plan checked "has it left BURIED" *before* "is it alive", so that erupting a lizard and then
+  killing it would count as a hit. The playtest showed what else that ordering counted: a drowning
+  lizard's final damage tick goes through `panicFromDamageIfDormant`, which found a survival player
+  within 16 blocks - through a wall - and flipped the corpse-to-be into FLEEING, so the next sample
+  saw "not dormant" and recorded a delivered encounter nobody had. `!isAlive()` is now checked first
+  and is a miss in any state; only a *living* lizard that has left BURIED counts as delivered. The
+  case that gives up - a player killing the lizard inside the one-second window between eruption and
+  the next sample - is rare (10 HP behind armour, in under 20 ticks) and harmless when it happens,
+  since the abandon path leaves a non-dormant lizard alone and merely refunds the player five
+  minutes of budget for an encounter they in fact had. Otherwise a pending lizard is abandoned on a
+  dimension change, a three-minute lease, or the player getting 48 blocks away. Abandoning culls the
+  lizard and refunds the budget to five minutes short of its threshold, so a miss costs about five
+  minutes rather than another full wait. The guarantee that follows is the entire point: even if
+  every single placement were missed, an armed player receives a fresh attempt every five
+  underground minutes indefinitely, where the measured status quo was never.
+
+  The debug lines were sharpened along the way: the sweep summary reports all four disjoint
+  outcomes per direction (kept, recently visited, explored chunk, no valid floor - "5 candidates, 5
+  rejected" had read as a contradiction), every candidate logs its sight-check outcome and where
+  the ray was blocked, and every abandon reason names its branch, the lizard's state, distance and
+  age, so a lizard that died in the floor is told apart from one that was unloaded or one that
+  panicked out of the ground before dying.
+
+  Three system properties, read once at startup and wired commented-out into `build.gradle` beside
+  the existing `geckolib.disable_examples`, make this testable in a single sitting:
+  `orelizards.director.budgetSeconds` collapses the whole 20-60 minute loop into seconds,
+  `orelizards.director.debug` logs every decision including a running hit/miss tally, and
+  `orelizards.director.skipSightCheck` accepts candidates without the line-of-sight test, to
+  exercise the sweep on its own. That tally exists because the hit rate is the one number the
+  cadence arithmetic cannot derive from the code, and it is what the budget bounds should be retuned
+  against.
+
+- **`CaveTerrain`**, holding the `findFloor` / `isStandable` pair that used to be private to
+  `FleeAndBurrowGoal`. The director needs the same answer, and a spawn director reaching into an AI
+  goal is the wrong dependency direction. It also confines the `isPathfindable` arity split (three
+  arguments up to 1.20.4, one from 1.20.6) to a single file for the port branches. One rule was
+  added on the way through - a standable block must be dry, see above - and otherwise only the
+  shared `MutableBlockPos` cursor moved from an instance field into the calls.
+
+- **`OreLizardEntity.spawnDormant`**, now the only supported way to create a lizard on the server. It
+  goes through `EntityType.spawn`, and that ordering is load-bearing: `create`, then position, then
+  `finalizeSpawn`, then add to the level. `finalizeSpawn` reads `blockPosition().getY()` to pick the
+  deepslate flag and the ore variant, so constructing the entity and calling `finalizeSpawn` yourself
+  hands back a stone coal lizard wherever you put it, Y=-50 deepslate included. This mod has shipped
+  that bug once already.
+
+### Changed
+
+- **Natural spawning is disabled**, behind `NATURAL_SPAWNING_ENABLED = false` rather than deleted.
+  Nothing was wrong with the code; it simply cannot express what the mob needs, and keeping it makes
+  the comparison one boolean away. Both registrations sit inside the guard, and the comment there
+  records why they have to move together: removing only `SpawnPlacements.register` makes the mob
+  spawn *more*, not less, and with none of the depth or block rules, because for a type with no
+  registered placement data `SpawnPlacements.checkSpawnRules` returns `true` and `getPlacementType`
+  returns `NO_RESTRICTIONS`. The biome entry is what makes the mob a spawn candidate at all; the
+  placement registration is only the filter applied afterwards.
+
+- **A dormant lizard only erupts for a player it can see.** `tickBuried` finds the nearest survival
+  player within the 5-block trigger range as before, and now also requires
+  `LivingEntity.hasLineOfSight` to that player before erupting; the nearest-player fallback in
+  `panicFromDamageIfDormant` applies the same rule when the damage had nobody behind it. The trigger
+  is a sphere, and underground a 5-block sphere routinely reaches through a wall into the next
+  pocket: a lizard sealed in stone four blocks away would erupt and flee where nobody could see it,
+  spending the encounter on nothing. The director's first playtest lost placements to exactly this,
+  but the rule lives in the entity because it protects natural spawns just the same. `hasLineOfSight`
+  was chosen over `Mob.getSensing()` deliberately, and checked with `javap`: it builds its own
+  `ClipContext` and calls `Level.clip` directly, with no reference to `Sensing`. That matters because
+  a dormant lizard is now `NoAi`, and `Sensing` is only refreshed from `serverAiStep`, so a cached
+  answer would be stale for as long as the lizard was buried. Older branches spell the method
+  `canSee`.
+
+- **A dormant lizard no longer runs its AI.** `becomeDormant` sets `setNoAi(true)` and
+  both routes out of BURIED (`beginErupting`, and `beginFleeing` for the panic-from-damage path)
+  clear it, so the hours a lizard spends buried no longer cost a sensing pass, a
+  goal-selector tick and a navigation tick each. `FleeAndBurrowGoal` is inert without a flee target
+  and the two look goals only matter while the mob is visible, so nothing was being achieved by any
+  of it. Three things this deliberately does not touch, each of which would have been a regression:
+  `tickBuried` runs from the entity's own `tick()` override, so proximity triggering is unaffected;
+  `checkDespawn` is called by `ServerLevel` directly rather than from the AI step, so dormant lizards
+  are still culled; and falling is governed by `NoGravity`, a separate flag.
+
+- **`DORMANT_DESPAWN_RADIUS` drops from 128 to 48, and the "nearest player is still underground"
+  keep-clause is gone.** Both were written to protect a rare natural spawn from being culled out of a
+  cave somebody was working through. Under the director the incentive inverts: every lizard in the
+  world was deliberately placed a short walk ahead of one specific player, so both clauses are true
+  by construction for exactly the lizards that most need collecting, and an unencountered one would
+  be effectively immortal - and a leftover like that suppresses the next placement through the
+  director's own nearby-lizard check. 48 matches the director's abandon radius so the two cleanup
+  paths agree on when an encounter has been walked away from instead of each waiting on the other.
+  `setPersistenceRequired()` was considered and rejected for the director's own placements: it
+  short-circuits `checkDespawn` outright, which would make any lost lizard permanent.
+
+- **`MobCategory.AMBIENT` stays, but for a different reason.** The original justification was purely
+  about population caps, and with natural spawning off that argument is moot. The category is kept
+  because it is baked into the registered `EntityType`, it is what `/data` and mob-cap tooling report,
+  and the obvious alternative - `MISC` - is wrong on its own terms, being the category for entities
+  that aren't `Mob`s. Only the comment changed.
+
+### Removed
+
+- **`OreLizardEntity.canSpawn` and its 30% rejection roll.** The roll only ever existed because
+  vanilla spawn weights are integers and ours was already at the floor of 1; the director sets its
+  cadence in minutes, so a dice roll on top would add nothing but noise. The rules themselves survive
+  as `isDirectorSiteValid` (Y < 50, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
+  `BASE_STONE_OVERWORLD`, not in a fluid), which the disabled `SpawnPlacements.register` now reaches through a
+  lambda. The method did not survive, because its signature names `MobSpawnType` - which is
+  `EntitySpawnReason` from 1.21.3 on - and that would drag a per-version type into a director call
+  path that is otherwise identical on all twenty branches. A lambda's parameter types are inferred,
+  so they never have to be written down.
+
 ## 1.2.1
 
 A tuning pass: the lizard moves at the speed it was always meant to, and its walk cycle has a body

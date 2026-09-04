@@ -119,17 +119,39 @@ condition by construction. Keep it that way — a FLEEING lizard without a targe
 and then deletes it. Both `tickErupting` and `tickFleeing` re-check the target each tick and burrow
 early if it's gone.
 
+**An activation needs line of sight.** `TRIGGER_RANGE` is a 5-block sphere, and underground a sphere
+that size routinely reaches through a wall into the next pocket, so `tickBuried` also requires
+`this.hasLineOfSight(player)` (spelled `canSee` on the oldest branches) before erupting; the
+`panicFromDamageIfDormant` fallback that picks the nearest player applies the same rule. A lizard in a
+sealed pocket four blocks through stone used to erupt and flee where nobody could see it, spending the
+encounter — the director's first playtest lost placements to exactly that. `LivingEntity.hasLineOfSight`
+does its own `Level.clip` and never touches `Sensing`, which matters because a dormant lizard is
+`NoAi` and `Mob.getSensing()` is only refreshed from `serverAiStep`.
+
 `tick()` also drives a `firework`-particle spark trail (`emitSparkTrail`) so a fleeing lizard stays
 trackable in an unlit cave. Like the emissive glow, it is gated on the state machine and never runs
 while BURIED — anything that reveals a dormant lizard defeats the mob's core mechanic.
 
+`becomeDormant` also sets `setNoAi(true)` and both routes out of BURIED (`beginErupting`, and
+`beginFleeing` for the panic-from-damage path) clear it, so a lizard spends its
+buried hours without ticking sensing, the goal selector or the navigator. `Mob.isEffectiveAi()` is
+`super && !isNoAi()`, and that is the flag `LivingEntity.aiStep` gates `serverAiStep` on. Three
+things it deliberately doesn't reach: `tickBuried` runs from our own `tick()`, so proximity
+triggering is unaffected; `checkDespawn` is called by `ServerLevel` directly rather than from the AI
+step, so dormant lizards still get culled; and gravity is `NoGravity`, a different flag.
+
 Several vanilla behaviours are deliberately overridden to support the "embedded in the floor"
 illusion, each with a comment explaining why: `updateInvisibilityStatus` (vanilla re-derives the
 invisible flag from potion effects every tick and would wipe our dormancy), `isInWall`
-(suffocation exemption except while FLEEING), `isPushable`, and `checkDespawn` (interval-gated,
-never despawns while the nearest player is still underground; dormant lizards are additionally safe
-within 128 blocks of any player and removed outright beyond it, and an activated one never despawns
-at all since it discards itself at the end of DIGGING_DOWN).
+(suffocation exemption except while FLEEING), `isPushable`, and `checkDespawn` (interval-gated;
+dormant lizards are safe within 48 blocks of any player and removed outright beyond it, and an
+activated one never despawns at all since it discards itself at the end of DIGGING_DOWN). That 48
+matches `EncounterDirector.PENDING_ABANDON_DISTANCE`, so the director's own abandon path and the
+entity's despawn check agree on when an encounter has been walked away from. `checkDespawn` also
+used to keep any lizard alive while the nearest player was still underground; that clause was
+deleted with the director, because every director-placed lizard satisfies it by construction and it
+therefore made a missed placement immortal. Do not reach for `setPersistenceRequired()` as a
+substitute for any of this - it short-circuits `checkDespawn` entirely.
 
 ### Variants and rendering
 
@@ -210,15 +232,112 @@ Two GeckoLib timing rules this mob depends on, both learned the hard way:
 
 ## Spawning
 
-Registered in [OreLizardsMod](src/main/java/com/orelizards/OreLizardsMod.java) as `MobCategory.AMBIENT`
-(not `CREATURE` — `CREATURE`'s population cap is shared with all surface animals and is effectively
-always full underground, so the mob would never get a spawn attempt). Weight 1, plus a 30% rejection
-roll inside `canSpawn` because spawn weights are integers and 1 is the floor.
+**Vanilla natural spawning is off.** It is still in
+[OreLizardsMod](src/main/java/com/orelizards/OreLizardsMod.java), behind
+`NATURAL_SPAWNING_ENABLED = false`, because nothing was ever wrong with it: a headless run against
+real worldgen produced **43 valid lizard placements per 400,000 simulated attempts**, in the plains,
+dripstone-cave and lush-cave spawn lists. Spawning worked; discovery didn't. `MobCategory.AMBIENT`
+allots roughly **15 spawn slots across the ~289 loaded chunks** around a player and shares them with
+bats, a dormant lizard is invisible, silent and particle-free with a **5-block** wake radius, and
+worldgen seals some lizards inside solid stone where they hold cap slots forever. A spawn weight
+cannot express "somewhere the player will actually walk", so no amount of tuning fixes that.
 
-Spawn rules in `canSpawn`: `Y < 50`, at least 8 blocks below the `WORLD_SURFACE` heightmap, on
-`BASE_STONE_OVERWORLD`. Depth-below-surface is used rather than a light check because it works
-during worldgen before lighting exists and ignores player torches. Stone vs. deepslate is decided
-by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band), not by sampling blocks.
+**The two registrations must be flipped together.** Deleting only `SpawnPlacements.register` and
+leaving `BiomeModifications.addSpawn` makes the mob spawn *more*, unrestricted: for a type with no
+registered placement data, `SpawnPlacements.checkSpawnRules` returns `true` and `getPlacementType`
+returns `NO_RESTRICTIONS`. The biome entry decides whether the mob is a spawn candidate at all; the
+placement registration is only the filter applied afterwards.
+
+`MobCategory.AMBIENT` stays even though its original justification (`CREATURE`'s cap is shared with
+all surface animals and is effectively always full underground) is now moot. It is baked into the
+registered `EntityType` and reported by `/data` and mob-cap tooling, and the obvious alternative,
+`MISC`, is for entities that aren't `Mob`s.
+
+### The encounter director
+
+[EncounterDirector](src/main/java/com/orelizards/encounter/EncounterDirector.java) places lizards
+instead. It is all-static, subscribes `ServerTickEvents.END_SERVER_TICK` and
+`ServerLifecycleEvents.SERVER_STOPPED`, and keeps one `PlayerBudget` per player UUID in a plain
+`HashMap` (correct, not lucky — that event only fires on the server thread). Nothing is persisted;
+each UUID's first budget of a server run gets a uniform 0–20 minute head start so short sessions
+still land an encounter.
+
+Once a second per player it folds the position delta into a smoothed heading, pushes the position
+into a 128-entry ring buffer, and — if the player is survival, alive, moving at least 0.5 blocks/s
+and at cave depth — accrues one second of budget. Past a threshold rolled uniformly in **20–60
+minutes** the player is *armed*, and at most one placement sweep runs per tick server-wide and once
+per 10 s per armed player. The sweep is the `FleeAndBurrowGoal` shape: 16 compass directions,
+outermost ring inwards (32/24/16 blocks), first standable valid floor per direction, scored on
+heading alignment, distance from ideal, `|dY|`, and a penalty for not sitting 2–4 blocks off the
+path line. Candidates are then walked best-first and the first one with a **clear line of sight from
+the player's eye** wins.
+
+That sight test was inverted after the first playtest. The plan called for "never in the player's line
+of sight", and both placements of the session landed hidden — behind a wall, in a different cave
+pocket, and underwater, where each lizard drowned within seconds. Underground, "16–32 blocks away and
+out of view" is very often exactly "somewhere the player will never walk", so the director now
+demands the opposite: open air between the eye and the site is the proof that it's the same cave.
+Concealment never bought anything anyway, because `finalizeSpawn` (→ `setInvisible(true)`) runs before
+`addFreshEntity`, so no client is ever sent a visible frame.
+
+Rejection filters run in cost order, and the cheap ones matter more than the raycast:
+
+1. `hasChunksAt` before **any** block read. `getBlockState`, `getHeight` and `clip` all generate the
+   chunk on the server thread. Same non-negotiable precedent as `FleeAndBurrowGoal`.
+2. **Recent positions.** Nothing within 12 blocks of the ring buffer. The sight test only proves a
+   site is reachable; the tell it can't catch is "I mined that floor twenty seconds ago", and this
+   filter also covers walking backwards and retracing a passage.
+3. **Chunk `inhabitedTime`** above ~10 minutes: free, already persisted, best available oracle for
+   explored ground.
+4. **Sight**: `level.clip(eye → site centre, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE)` must
+   return `MISS`. `VISUAL`, not `COLLIDER` — `COLLIDER` reports glass as a wall, and a site seen
+   through a window is reachable. `Fluid.NONE` so a flooded stretch between the player and a dry
+   ledge doesn't hide it. Look direction is not consulted. The whole ray is behind `hasChunksAt` and
+   an unloaded stretch rejects the candidate.
+
+Sites must be **dry**: `CaveTerrain.isStandable` requires an empty fluid state at `y` and `y+1`
+(vanilla's `LiquidBlock.isPathfindable` is `!fluid.is(LAVA)` regardless of path type, so water passed
+as walkable floor), and `isDirectorSiteValid` re-checks the fluid at the site as belt-and-braces.
+`FleeAndBurrowGoal` shares `isStandable`, so its sweep no longer routes a fleeing lizard into a pool
+either.
+
+One pending lizard per player. `resolvePending` checks `!isAlive()` **first** — a dead lizard is a
+miss whatever state it died in — and only then `!isDormant()` on a living lizard as *delivered*. The
+plan had those the other way round so that erupt-then-kill counted as a hit; the playtest showed that
+ordering also counted a drowning lizard whose final damage tick panicked it into FLEEING. Otherwise a
+pending lizard is abandoned on a dimension change, a 3-minute lease, or the player getting 48 blocks
+away — abandoning culls it via `removeAsUnfound()` and refunds the budget to 5 minutes short of the
+threshold. Even if every placement were missed, an armed player gets a fresh attempt every 5
+underground minutes forever.
+
+Three system properties, read once in `register()`, wired commented-out into `build.gradle` next to
+`geckolib.disable_examples`: `orelizards.director.budgetSeconds` (overrides both budget bounds;
+`=30` runs the whole loop in half a minute), `orelizards.director.debug` (logs every decision plus a
+running hit/miss tally — that tally is the only way to measure how often a placement is actually
+walked into), `orelizards.director.skipSightCheck` (accepts candidates without the line-of-sight
+test, so the sweep can be exercised on its own).
+
+### Placement rules
+
+`OreLizardEntity.isDirectorSiteValid` is the surviving rule set, and the disabled
+`SpawnPlacements.register` uses it too through a lambda (a lambda so its parameter types, one of
+which is `MobSpawnType` here and `EntitySpawnReason` from 1.21.3 on, stay inferred): `Y < 50`, at
+least 8 blocks below the `WORLD_SURFACE` heightmap, on `BASE_STONE_OVERWORLD`, not in a fluid.
+Depth-below-surface
+rather than a light check because it works during worldgen before lighting exists and ignores player
+torches. The old `canSpawn`'s 30% rejection roll is gone — it only existed because spawn weights are
+integers and 1 is the floor, and the director sets cadence in minutes.
+
+Stone vs. deepslate is decided by `Y < -4` (the midpoint of 1.20.1's stone→deepslate blend band),
+not by sampling blocks. **Everything that creates a lizard on the server must go through
+`OreLizardEntity.spawnDormant`**, which routes through `EntityType.spawn`: that runs `create` →
+position → `finalizeSpawn` → add-to-level, and `finalizeSpawn` reads `blockPosition().getY()` to
+pick the deepslate flag and the ore variant. Building the entity by hand and calling `finalizeSpawn`
+afterwards yields a stone coal lizard at Y=-50. This has shipped as a bug once already.
+
+[CaveTerrain](src/main/java/com/orelizards/entity/ai/CaveTerrain.java) holds `findFloor` /
+`isStandable`, shared by the flee goal and the director, so the `isPathfindable` arity split (3-arg
+up to 1.20.4, 1-arg from 1.20.6) lives in one file.
 
 ## Repo gotchas
 

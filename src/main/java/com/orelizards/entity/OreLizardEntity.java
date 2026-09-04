@@ -1,6 +1,7 @@
 package com.orelizards.entity;
 
 import com.orelizards.entity.ai.FleeAndBurrowGoal;
+import com.orelizards.registry.ModEntities;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
@@ -13,7 +14,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.BlockTags;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
@@ -109,19 +109,18 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	// first place, so reading it directly beats sampling blocks at spawn time.
 	private static final int DEEPSLATE_Y_LEVEL = -4;
 
-	// Spawn attempts that pass every other rule still fail 30% of the time, trimming the rate
-	// without needing a fractional spawn weight (weights are ints, and ours is already at 1).
-	private static final int SPAWN_CHANCE_PERCENT = 70;
-
 	// Despawn tuning. Vanilla re-evaluates despawning every single tick per mob; we only bother
 	// every 5 seconds, and even then bail out early on the cheap checks.
 	private static final int DESPAWN_CHECK_INTERVAL = 100;
-	// How far away the nearest player has to be before a dormant lizard is written off. 128 blocks
-	// is this entity's own tracking range (trackRangeChunks(8) in ModEntities), so beyond it the
-	// lizard isn't even being sent to a client - nobody can encounter it, and leaving it there only
-	// holds a slot in the AMBIENT population cap that would otherwise let one spawn in the cave a
-	// player is actually exploring. Inside that radius a dormant lizard never despawns at all.
-	private static final double DORMANT_DESPAWN_RADIUS = 128.0;
+	// How far away the nearest player has to be before a dormant lizard is written off. This was
+	// 128 - the entity's own tracking range - back when a lizard was a rare natural spawn worth
+	// hoarding wherever it landed. Under the encounter director the incentive inverts: every lizard
+	// in the world was deliberately placed a short walk ahead of one specific player, so a radius
+	// that generous makes a placement nobody stepped on effectively immortal, and a leftover like
+	// that suppresses the next placement through the director's own nearby-lizard check. 48 matches
+	// EncounterDirector.PENDING_ABANDON_DISTANCE so the director's abandon path and this cull agree
+	// on when an encounter has been missed instead of each waiting on the other.
+	private static final double DORMANT_DESPAWN_RADIUS = 48.0;
 	private static final double DORMANT_DESPAWN_RADIUS_SQ = DORMANT_DESPAWN_RADIUS * DORMANT_DESPAWN_RADIUS;
 
 	private static final double TRIGGER_RANGE = 5.0;
@@ -184,21 +183,54 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 				.add(Attributes.ARMOR_TOUGHNESS, 8.0);
 	}
 
-	public static boolean canSpawn(EntityType<OreLizardEntity> type, ServerLevelAccessor level, MobSpawnType spawnType,
-			BlockPos pos, RandomSource random) {
-		// Light level intentionally not checked - it should spawn regardless of a torch-carrying
-		// player's light, so it can be found while exploring lit-up caves, not just pitch darkness.
-		//
-		// The old "Y < 0" rule made stone lizards unreachable: 1.20.1 worldgen fully replaces
-		// stone with deepslate below Y=-8 (blending from Y=0 down), so every natural spawn landed
-		// on deepslate. The ceiling now reaches up into the stone band instead. Depth-below-
-		// surface (rather than a light check) is what keeps it genuinely underground, since it
-		// works during worldgen when lighting isn't computed yet and ignores player torches.
-		// Cheapest gate first so the majority of rejected attempts never reach the heightmap lookup.
-		return random.nextInt(100) < SPAWN_CHANCE_PERCENT
-				&& pos.getY() < MAX_SPAWN_Y
-				&& isUnderground(level, pos)
-				&& level.getBlockState(pos.below()).is(BlockTags.BASE_STONE_OVERWORLD);
+	/**
+	 * Somewhere a lizard belongs, vertically: inside the stone band and well under the terrain
+	 * surface for this column.
+	 *
+	 * <p>Light level is intentionally not part of this. A lizard should be findable in a cave
+	 * somebody has already torched up, not only in pitch darkness, and depth-below-surface is
+	 * measurable during worldgen before lighting has been computed at all - which the old
+	 * {@code canSpawn} needed, and which the encounter director still leans on when it asks this
+	 * same question about the player's own position once a second.
+	 *
+	 * <p>The ceiling is {@value #MAX_SPAWN_Y} rather than the Y=0 it originally was: 1.20.1 worldgen
+	 * replaces stone with deepslate entirely below Y=-8, so a Y&lt;0 rule put every lizard on
+	 * deepslate and made the stone variants unreachable.
+	 *
+	 * <p>Callers own the chunk-loading question - {@code getHeight} generates the chunk if it is
+	 * missing, on the calling thread.
+	 */
+	public static boolean isCaveDepth(LevelReader level, BlockPos pos) {
+		return pos.getY() < MAX_SPAWN_Y && isUnderground(level, pos);
+	}
+
+	/**
+	 * The full "a lizard may be placed here" rule: cave depth, standing on natural overworld stone,
+	 * and not in a fluid.
+	 *
+	 * <p>The fluid clause is belt-and-braces. {@code CaveTerrain.isStandable} now refuses wet blocks
+	 * itself, but it did not always: vanilla's {@code LiquidBlock.isPathfindable(LAND)} is true for
+	 * anything but lava, so the director's first playtest placed both of its lizards on flooded
+	 * cave floors, and a dormant lizard cannot breathe underwater. It takes its first drowning tick
+	 * 320 ticks (16 s) after placement and is dead by 400: with a survival player inside
+	 * {@value #PANIC_TARGET_SEARCH_RANGE} blocks the final hit sent it fleeing, which the director
+	 * scored as a delivered encounter nobody saw; with only a spectator in range it died in the
+	 * floor. The clause stays here so that the placement rule is safe on its own terms and does not
+	 * silently depend on which floor-finder fed it the position.
+	 *
+	 * <p>This is what {@code canSpawn} used to be, minus its 30% rejection roll. That roll only ever
+	 * existed because vanilla spawn weights are integers and ours was already at the floor of 1;
+	 * the encounter director sets its cadence in minutes, so a dice roll on top would add nothing
+	 * but noise. The rules survive here, the method does not: {@code canSpawn}'s signature names
+	 * {@code MobSpawnType}, which is {@code EntitySpawnReason} from 1.21.3 on, and that would drag
+	 * a per-version type into a director call path that is otherwise identical on all 20 branches.
+	 * The vanilla {@code SpawnPlacements} registration adapts to this with a lambda, whose parameter
+	 * types are inferred and so never written down.
+	 */
+	public static boolean isDirectorSiteValid(LevelReader level, BlockPos pos) {
+		return isCaveDepth(level, pos)
+				&& level.getBlockState(pos.below()).is(BlockTags.BASE_STONE_OVERWORLD)
+				&& level.getFluidState(pos).isEmpty();
 	}
 
 	/**
@@ -211,18 +243,48 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	}
 
 	/**
+	 * Places a fully-formed dormant lizard at {@code pos}, or returns null if the level refused it.
+	 *
+	 * <p>Going through {@link EntityType#spawn} is load-bearing, not stylistic. It runs
+	 * {@code create} then positions the entity then calls {@link #finalizeSpawn} and only then adds
+	 * it to the level - and our {@code finalizeSpawn} derives both the deepslate flag and the ore
+	 * variant from {@code blockPosition().getY()}. Constructing the entity by hand and calling
+	 * {@code finalizeSpawn} yourself therefore hands you a stone coal lizard wherever you put it,
+	 * Y=-50 deepslate included. This mod has already shipped that bug once. It is also what runs
+	 * {@code becomeDormant()}, so the lizard arrives invisible, buried and NoAi with no further work.
+	 *
+	 * <p>{@code setPersistenceRequired()} is deliberately <em>not</em> called on the result. It
+	 * short-circuits {@link #checkDespawn} outright, so any placement the player never walked into
+	 * would sit in that cave permanently. A director-placed lizard is meant to be collected by
+	 * exactly the same rule as every other one: nobody is near it, nobody can find it, remove it.
+	 *
+	 * <p>One of the four lines a port branch has to touch: the reason enum is
+	 * {@code EntitySpawnReason} from 1.21.3 on, and this 3-argument overload does not exist before
+	 * 1.19.4, where the 8-argument form is the fallback. Both changes are contained in this method.
+	 */
+	@Nullable
+	public static OreLizardEntity spawnDormant(ServerLevel level, BlockPos pos) {
+		return ModEntities.ORE_LIZARD.spawn(level, pos, MobSpawnType.NATURAL);
+	}
+
+	/**
 	 * Ore Lizards are meant to be a rare find, so a player who surfaces for a moment shouldn't come
 	 * back to an emptied-out cave system. Despawning is therefore split by state, and nothing like
 	 * vanilla's roll:
 	 *
 	 * <ul>
 	 *   <li><b>Dormant.</b> Never despawns while any player is within
-	 *       {@value #DORMANT_DESPAWN_RADIUS} blocks, and never while the nearest player is still
-	 *       underground - a buried lizard is the whole point of the mob, and one vanishing out of
-	 *       the floor of a cave someone is exploring is indistinguishable from it never having
-	 *       spawned. Past that radius it is outside its own tracking range and cannot be found by
-	 *       anyone, so it is removed outright rather than left holding a slot in the shared AMBIENT
-	 *       population cap that a lizard nearer the player could be using.</li>
+	 *       {@value #DORMANT_DESPAWN_RADIUS} blocks - a buried lizard is the whole point of the mob,
+	 *       and one vanishing out of the floor of the cave someone is standing in is
+	 *       indistinguishable from it never having spawned. Past that radius the player has walked
+	 *       away from an encounter that was placed for them specifically, so it is removed rather
+	 *       than left waiting on a return trip.
+	 *       <p>There was a second keep-clause here until the encounter director landed: never
+	 *       despawn while the nearest player is still underground. It protected a rare natural spawn
+	 *       from being culled out of a cave system somebody was still working through. Under the
+	 *       director it inverts, because every lizard in the world was placed for a specific
+	 *       underground player - the clause is true by construction for exactly the lizards that
+	 *       most need collecting, so a missed placement would never be collected at all.</li>
 	 *   <li><b>Activated.</b> Never despawns at all. It has already been seen, it is in the middle
 	 *       of a scripted eruption/flee/burrow run, and it discards itself at the end of
 	 *       {@link State#DIGGING_DOWN} anyway. Deleting it partway through is the one removal that
@@ -252,9 +314,6 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 			return;
 		}
 		if (player.distanceToSqr(this) < DORMANT_DESPAWN_RADIUS_SQ) {
-			return;
-		}
-		if (isUnderground(this.level(), player.blockPosition())) {
 			return;
 		}
 
@@ -341,6 +400,26 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		return this.getLizardState() == State.FLEEING;
 	}
 
+	/**
+	 * Still in the ground, still unfound. The encounter director's entire notion of "delivered" is
+	 * the negation of this: nothing but a genuine activation can take a lizard out of BURIED (see
+	 * {@link #beginErupting}), so a director-placed lizard that is no longer dormant is one a player
+	 * walked into.
+	 */
+	public boolean isDormant() {
+		return this.getLizardState() == State.BURIED;
+	}
+
+	/**
+	 * Removes a lizard that was placed for a player who never came near it. Mechanically identical
+	 * to {@link #discard()}; the separate name is the point, because this is the one removal that is
+	 * not the mob's own state machine reaching its end, and it should be possible to find every
+	 * caller of it. On 1.16.5 the underlying call is {@code remove()}.
+	 */
+	public void removeAsUnfound() {
+		this.discard();
+	}
+
 	@Nullable
 	public LivingEntity getFleeTarget() {
 		return this.fleeTarget;
@@ -388,7 +467,19 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		// detects creative players), which previously let creative players wake dormant lizards.
 		Player nearest = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(), TRIGGER_RANGE,
 				EntitySelector.NO_CREATIVE_OR_SPECTATOR);
-		if (nearest != null) {
+		// The trigger is a 5-block sphere, and underground a sphere that size routinely reaches
+		// through a wall into the next cave pocket. Without this a lizard in a sealed pocket four
+		// blocks through stone erupted and fled where nobody could see, spending the encounter - the
+		// director's first playtest lost placements to exactly that. Requiring a clear line to the
+		// player means eruption is something they can witness, which is the entire product. This
+		// protects natural spawns just as much as director placements, so it lives here rather
+		// than in the director.
+		//
+		// LivingEntity.hasLineOfSight does its own Level.clip from eye to eye (javap: ClipContext
+		// COLLIDER/NONE, no reference to Sensing), which matters because a dormant lizard is NoAi
+		// and Mob.getSensing() is only refreshed from serverAiStep - a cached answer would be stale
+		// forever. Older branches spell this method canSee.
+		if (nearest != null && this.hasLineOfSight(nearest)) {
 			this.beginErupting(nearest);
 		}
 	}
@@ -438,6 +529,8 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 */
 	private void beginErupting(LivingEntity target) {
 		this.fleeTarget = target;
+		// Hand the goals and the navigator back - see becomeDormant for why they were taken away.
+		this.setNoAi(false);
 		this.setLizardState(State.ERUPTING);
 		this.stateTimer = ERUPT_DURATION_TICKS;
 		this.setInvisible(false);
@@ -446,6 +539,10 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 
 	private void beginFleeing(LivingEntity target) {
 		this.fleeTarget = target;
+		// The second route out of BURIED (panicFromDamageIfDormant skips the eruption), so NoAi has
+		// to be cleared here too - a FLEEING lizard with NoAi still set has no goal selector or
+		// navigator running, and stands visible and motionless until its timer buries it.
+		this.setNoAi(false);
 		this.setLizardState(State.FLEEING);
 		this.stateTimer = FLEE_DURATION_TICKS;
 		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
@@ -477,6 +574,17 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		this.setLizardState(State.BURIED);
 		this.stateTimer = 0;
 		this.setInvisible(true);
+		// A dormant lizard has nothing for the AI to do - FleeAndBurrowGoal is inert without a flee
+		// target and the two look goals only matter while it is visible - yet without this it would
+		// still tick sensing, the goal selector and the navigator every tick for however many hours
+		// it spends in the floor. NoAi makes Mob.isEffectiveAi() false, which is the flag
+		// LivingEntity.aiStep gates serverAiStep on, so all of that stops. Three things it
+		// deliberately does not touch: tickBuried runs from our own tick() override, so proximity
+		// triggering is unaffected; checkDespawn is called by ServerLevel directly rather than from
+		// the AI step, so dormant lizards still get culled; and gravity is a separate flag
+		// (NoGravity), so a lizard whose floor is mined still falls. Mob persists NoAi to NBT for
+		// free, and becomeDormant re-asserts it on load anyway.
+		this.setNoAi(true);
 		AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
 		if (speed != null) {
 			speed.removeModifier(FLEE_SPEED_MODIFIER_ID);
@@ -583,8 +691,9 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	 * <p>Damage with nobody behind it now leaves the lizard dormant. It used to flee from a null
 	 * target instead, which the flee goal cannot path away from: the lizard stood visible and
 	 * motionless in the open for the full {@value #FLEE_DURATION_TICKS} ticks, then burrowed and
-	 * deleted itself. A lizard taking environmental damage with no player in sight stays in the rock
-	 * and takes it.
+	 * deleted itself. A lizard taking environmental damage with no player in sight - literally: the
+	 * fallback player has to pass {@code hasLineOfSight}, like the proximity trigger - stays in the
+	 * rock and takes it.
 	 */
 	private void panicFromDamageIfDormant(DamageSource source) {
 		State current = this.getLizardState();
@@ -595,9 +704,16 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 		LivingEntity threat = source.getEntity() instanceof LivingEntity attacker ? attacker : null;
 		if (threat == null) {
 			// Environmental damage - lava, a falling block, a hit from something with no owner.
-			// There is usually still a player behind it, so run from the nearest one if there is any.
+			// There is usually still a player behind it, so run from the nearest one if there is any
+			// - but only one the lizard can actually see, by the same rule as tickBuried. Sixteen
+			// blocks underground crosses several cave walls, and a drowning lizard picking a player
+			// on the other side of one of them as its "threat" is how a placement nobody could reach
+			// got counted as found.
 			threat = this.level().getNearestPlayer(this.getX(), this.getY(), this.getZ(),
 					PANIC_TARGET_SEARCH_RANGE, EntitySelector.NO_CREATIVE_OR_SPECTATOR);
+			if (threat != null && !this.hasLineOfSight(threat)) {
+				threat = null;
+			}
 		}
 		if (!this.isValidFleeTarget(threat)) {
 			return;

@@ -2,13 +2,11 @@ package com.orelizards.entity.ai;
 
 import com.orelizards.entity.OreLizardEntity;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.util.DefaultRandomPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.pathfinder.PathComputationType;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
@@ -41,14 +39,11 @@ public class FleeAndBurrowGoal extends Goal {
 	private static final int SCAN_MAX_DISTANCE = 12;
 	private static final int SCAN_MIN_DISTANCE = 6;
 	private static final int SCAN_DISTANCE_STEP = 3;
-	private static final int FLOOR_SEARCH_UP = 3;
-	private static final int FLOOR_SEARCH_DOWN = 5;
 
 	private static final int FALLBACK_RADIUS = 16;
 	private static final int FALLBACK_Y_RANGE = 7;
 
 	private final OreLizardEntity lizard;
-	private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 	private int repathCooldown;
 	private int earlyRepathCooldown;
 
@@ -146,12 +141,12 @@ public class FleeAndBurrowGoal extends Goal {
 				int z = origin.getZ() + Math.round(dz * distance);
 				// Never read through an unloaded chunk: Level.getBlockState would force it to load.
 				// This covers exactly the column findFloor reads.
-				if (!level.hasChunksAt(x, origin.getY() - FLOOR_SEARCH_DOWN - 1, z,
-						x, origin.getY() + FLOOR_SEARCH_UP + 1, z)) {
+				if (!level.hasChunksAt(x, origin.getY() - CaveTerrain.FLOOR_SEARCH_DOWN - 1, z,
+						x, origin.getY() + CaveTerrain.FLOOR_SEARCH_UP + 1, z)) {
 					continue;
 				}
 
-				BlockPos floor = findFloor(level, x, origin.getY(), z);
+				BlockPos floor = CaveTerrain.findFloor(level, x, origin.getY(), z);
 				if (floor == null) {
 					continue;
 				}
@@ -167,33 +162,5 @@ public class FleeAndBurrowGoal extends Goal {
 		}
 
 		return best;
-	}
-
-	/**
-	 * The first standable position in this column, searched downwards from slightly above the
-	 * lizard's own height, so a candidate lands on the cave floor rather than inside the rock.
-	 */
-	@Nullable
-	private BlockPos findFloor(Level level, int x, int baseY, int z) {
-		for (int dy = FLOOR_SEARCH_UP; dy >= -FLOOR_SEARCH_DOWN; dy--) {
-			int y = baseY + dy;
-			if (isStandable(level, x, y, z)) {
-				return new BlockPos(x, y, z);
-			}
-		}
-		return null;
-	}
-
-	private boolean isStandable(Level level, int x, int y, int z) {
-		this.cursor.set(x, y - 1, z);
-		if (!level.getBlockState(this.cursor).isFaceSturdy(level, this.cursor, Direction.UP)) {
-			return false;
-		}
-		this.cursor.set(x, y, z);
-		if (!level.getBlockState(this.cursor).isPathfindable(level, this.cursor, PathComputationType.LAND)) {
-			return false;
-		}
-		this.cursor.set(x, y + 1, z);
-		return level.getBlockState(this.cursor).isPathfindable(level, this.cursor, PathComputationType.LAND);
 	}
 }

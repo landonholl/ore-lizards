@@ -44,13 +44,30 @@ loom {
 	// DISABLE_EXAMPLES_PROPERTY_KEY, spelled identically on GeckoLib 3.x and 4.x), so setting it
 	// here disarms them. This only affects runClient/runServer: outside a dev environment the
 	// examples never register at all, so the published jar was never affected.
+	//
+	// EncounterDirector reads three of its own properties once at startup, all optional and all
+	// off by default. Uncomment for a test session rather than editing constants:
+	//   orelizards.director.budgetSeconds - overrides both budget bounds, so '30' runs the whole
+	//     place/deliver/abandon loop in half a minute instead of 20-60 minutes.
+	//   orelizards.director.debug - logs every decision: eligibility, budget, candidate count,
+	//     per-candidate score and rejection reason, the chosen position, the abandon reason, and a
+	//     running hit/miss tally. That tally is the only way to measure how often a placement is
+	//     actually walked into, which is the one number the cadence maths can't derive.
+	//   orelizards.director.skipSightCheck - accepts candidates without the clear-line-of-sight
+	//     test, to exercise the sweep on its own.
 	runs {
 		client {
 			property 'geckolib.disable_examples', 'true'
+			 property 'orelizards.director.budgetSeconds', '30'
+			 property 'orelizards.director.debug', 'true'
+			// property 'orelizards.director.skipSightCheck', 'true'
 		}
 
 		server {
 			property 'geckolib.disable_examples', 'true'
+			// property 'orelizards.director.budgetSeconds', '30'
+			// property 'orelizards.director.debug', 'true'
+			// property 'orelizards.director.skipSightCheck', 'true'
 		}
 	}
 }
