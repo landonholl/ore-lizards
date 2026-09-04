@@ -8,14 +8,18 @@ import software.bernie.geckolib.model.GeoModel;
 import software.bernie.geckolib.renderer.base.GeoRenderState;
 
 public class OreLizardModel extends GeoModel<OreLizardEntity> {
+	// GeckoLib 5.2 scans assets/<ns>/geckolib/models and assets/<ns>/geckolib/animations only, and keys
+	// what it finds by the path with that prefix and the .geo/.animation/.json suffixes stripped. So the
+	// files live under geckolib/ and both ids are the bare "entity/ore_lizard" - a "geo/..." path or a
+	// ".geo.json" suffix here finds nothing and the entity falls back to the missingno placeholder quad.
 	private static final ResourceLocation MODEL =
-			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "geo/entity/ore_lizard.geo.json");
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "entity/ore_lizard");
 	private static final ResourceLocation TEXTURE =
 			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard.png");
 	private static final ResourceLocation TEXTURE_DEEPSLATE =
 			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "textures/entity/ore_lizard_deepslate.png");
 	private static final ResourceLocation ANIMATIONS =
-			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "animations/entity/ore_lizard.animation.json");
+			ResourceLocation.fromNamespaceAndPath(OreLizardsMod.MOD_ID, "entity/ore_lizard");
 
 	/**
 	 * Which of the two skins this lizard wears, carried in the render state. GeckoLib 5 resolves the
