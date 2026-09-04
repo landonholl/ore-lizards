@@ -41,12 +41,18 @@ sourceSets {
 }
 
 loom {
-	mods {
-		orelizards {
-			sourceSet sourceSets.main
-			sourceSet sourceSets.client
-		}
-	}
+	// No mods { orelizards { sourceSet ... } } grouping here, deliberately. It would tell Fabric
+	// Loader that this mod spans every source set output - build/classes/java/main,
+	// build/resources/main, build/classes/java/client, build/resources/client - and Fabric API
+	// 0.4.x builds a mod's resource pack from ModContainer.getRootPath(), which is single-valued.
+	// Loader then warns "getRootPath access for orelizards with multiple paths, returning only one"
+	// and hands it a classes directory, so assets/ is invisible: the spawn egg model fails to load
+	// and GeckoLib throws "orelizards:geo/entity/ore_lizard.geo.json: Could not find model" the
+	// first time a lizard is rendered. Without the grouping the mod is discovered from its
+	// fabric.mod.json alone, so its one root is build/resources/main and the assets resolve. The
+	// client classes still reach the dev run through the client run config below and the jar
+	// through the jar tasks, so nothing else changes. Fabric API 0.5+ (1.18.2 and up) stopped using
+	// the single-valued call, which is why only 1.16.5 and 1.17.1 need this.
 
 	// GeckoLib publishes its own example mod inside the release jar - entrypoints
 	// software.bernie.example.GeckoLibMod and .ClientListener - and registers it whenever
