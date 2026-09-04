@@ -160,6 +160,26 @@ set of shards.
 
 ### GeckoLib asset contract
 
+**Blockbench's keyframes are rewritten at build time, and must be.** The export writes each keyframe
+as `{"post": {"vector": [x,y,z]}, "lerp_mode": "catmullrom"}`. GeckoLib 3's
+`JsonKeyFrameUtils.getKeyFrameVector` only accepts a bare `[x,y,z]` array or `{"vector": [x,y,z]}`
+(plus optional `easing`/`easingArgs`); it has no concept of `pre`, `post` or `lerp_mode` - neither
+string exists anywhere in the jar. Given the newer shape it finds no vector, reads **zero**
+keyframes, and animates nothing *silently*: the controller still reports the animation as playing
+with its clock advancing, and the model just sits in its bind pose. That is the "statue" bug, and it
+produces no log line of any kind. `processResources` in [build.gradle](build.gradle) therefore
+collapses every keyframe to `{"vector": ...}` on the way into `build/resources`. Consequences:
+
+- **Never "fix" the asset by hand.** `src/main/resources/.../ore_lizard.animation.json` is kept
+  byte-identical to main's so a re-export can be copied straight across; the build does the rest.
+- The downgrade is lossless for position and rotation - every `pre`/`post` pair the export emits
+  holds the same vector - but catmullrom smoothing is dropped, so GeckoLib 3 interpolates linearly.
+  Expect the walk cycle to read very slightly less rounded than on GeckoLib 4 versions.
+- If a re-export ever introduces a keyframe shape the collapser doesn't know, it will pass through
+  untouched and animate nothing, again silently. After any re-export, check the task's
+  `GeckoLib 3 keyframe downgrade: collapsed N keyframe(s)` line and confirm N matches the number of
+  keyframes in the file.
+
 Three files must agree, and mismatches fail *silently* (log spam at most):
 
 - Animation names in `new AnimationBuilder().addAnimation("...", loopType)` must exactly match the
