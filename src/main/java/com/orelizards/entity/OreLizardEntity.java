@@ -177,7 +177,11 @@ public class OreLizardEntity extends PathfinderMob implements GeoEntity {
 	public static AttributeSupplier.Builder createAttributes() {
 		return PathfinderMob.createMobAttributes()
 				.add(Attributes.MAX_HEALTH, 10.0)
-				.add(Attributes.MOVEMENT_SPEED, 0.3)
+				// 0.3 cut by a third to 0.199 (tuned by feel). Cut on the base attribute rather than on
+				// FLEE_SPEED_BONUS so every speed the mob has scales together - the flee modifier
+				// is MULTIPLY_TOTAL, so fleeing drops by the same third and keeps its 1.925x ratio
+				// to the walk it is boosting.
+				.add(Attributes.MOVEMENT_SPEED, 0.199)
 				.add(Attributes.KNOCKBACK_RESISTANCE, 0.5)
 				.add(Attributes.ARMOR, 15.0)
 				.add(Attributes.ARMOR_TOUGHNESS, 8.0)
