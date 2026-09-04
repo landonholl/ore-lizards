@@ -208,6 +208,18 @@ API dependency thinking the mod only uses it for biome spawns.
 
 ## Repo gotchas
 
+- **GeckoLib 5 only scans `assets/<namespace>/geckolib/models` and `assets/<namespace>/geckolib/animations`.**
+  `com.geckolib.cache.GeckoLibResources` walks exactly those two roots and keys every entry by its path
+  with that prefix stripped (its regex is `^(geckolib/)((animations/)|(models/))?`) along with the
+  `.geo` / `.animation` / `.json` suffixes. The id passed to `getModelResource` and `getAnimationResource`
+  is therefore the bare `orelizards:entity/ore_lizard` — no folder prefix, no extension, and the same
+  string for both. The GeckoLib 4 layout this branch was ported from (`assets/orelizards/geo/entity/` and
+  `assets/orelizards/animations/entity/`) is never visited at all, so GeckoLib loads 0 models and 0
+  animations and quietly substitutes its `geckolib:internal/missingno` placeholder — in game the lizard is
+  a single flat magenta-and-black quad with no geometry and no animation, which reads as a broken model
+  rather than a missing file. Textures are exempt: they are ordinary Minecraft assets resolved by full
+  `ResourceLocation` and stay under `textures/entity/`. The scan roots are identical in GeckoLib 5.1.0,
+  5.4.5 and 5.5.4.
 - There is no `libs/` directory on this branch. The 1.20.1 original carries `libs/mclib-20.jar`
   because GeckoLib 4.8.4 ships mclib jar-in-jar and Loom's dev-launch classpath misses nested jars.
   GeckoLib 5.2.2 for 1.21.8 (like 5.1.0 for 1.21.5, 4.8.5 for 1.21.4 and 4.9.2 for 1.21.1) has no
