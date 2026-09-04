@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.1
+
+A tuning pass: the lizard moves at the speed it was always meant to, and its walk cycle has a body
+sway to go with its legs.
+
+### Changed
+
+- **Movement speed reduced by a third**, from a base `MOVEMENT_SPEED` of 0.3 to 0.199. The cut is
+  made on the base attribute rather than on `FLEE_SPEED_BONUS`, which is the other place a speed
+  change could go. That boost is a `MULTIPLY_TOTAL` modifier, so lowering the base carries the
+  reduction into the flee as well: fleeing goes from 0.5775 to 0.383, down by the same third, while
+  the 1.925x ratio between fleeing and walking is left intact. Cutting the boost instead would have
+  slowed only the escape and left the mob moving at full speed everywhere else, flattening the
+  difference between a lizard that has been startled and one that is merely wandering. Nothing
+  downstream needed retuning: `FleeAndBurrowGoal`'s scan distances are in blocks and its repath
+  interval is in ticks, so a slower lizard simply covers less ground between repaths, and
+  `playStepSound` is paced by distance travelled so the scuttle sound slows to match on its own.
+- **`scuttle` re-exported with a body rotation channel.** The walk cycle previously moved only the
+  head, legs and tail; the body itself stayed rigid, which read as the lizard gliding while its legs
+  worked. The re-export keys `body` at the same eighth-second beats as the legs, so the torso now
+  rocks with the stride. Nothing else in the file changed - `appear`, `burrow` and `idle` are
+  byte-for-byte the same, the geometry was not re-exported, and every bone the new channel touches
+  exists in the geo (checked, per the asset contract in CLAUDE.md).
+
 ## 1.2.0+mc1.19.2
 
 A port of 1.2.0 to Minecraft 1.19.2 - Fabric API 0.77.0, Loader 0.19.5, Java 17. The mob itself is
