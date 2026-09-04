@@ -48,9 +48,24 @@ loom {
 		}
 	}
 
+	// GeckoLib publishes its own example mod inside the release jar - entrypoints
+	// software.bernie.example.GeckoLibMod and .ClientListener - and registers it whenever
+	// FabricLoader.isDevelopmentEnvironment() is true. One of those examples replaces the vanilla
+	// creeper renderer with a GeoReplacedEntityRenderer, which casts the Creeper to IAnimatable and
+	// crashes the client with a ClassCastException the moment a creeper comes into view; the rest
+	// register example entities that log "No data fixer registered for ..." on both sides. The
+	// examples check the geckolib.disable_examples system property (GeckoLibMod's own
+	// DISABLE_EXAMPLES_PROPERTY_KEY, spelled identically on GeckoLib 3.x and 4.x), so setting it
+	// here disarms them. This only affects runClient/runServer: outside a dev environment the
+	// examples never register at all, so the published jar was never affected.
 	runs {
 		client {
 			source sourceSets.client
+			property 'geckolib.disable_examples', 'true'
+		}
+
+		server {
+			property 'geckolib.disable_examples', 'true'
 		}
 	}
 }
