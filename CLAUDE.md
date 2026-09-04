@@ -159,6 +159,15 @@ before layers run, keeping the model-space matrix in a private field.
 
 ### GeckoLib asset contract
 
+**Keyframe format is a porting hazard.** Blockbench writes keyframes as
+`{"post": {"vector": [...]}, "lerp_mode": "catmullrom"}`, which GeckoLib 4 and 5 read natively. The
+GeckoLib 3 branches (1.16.5, 1.17.1, 1.18.2, 1.19.2) cannot - that parser only accepts a bare
+`[x,y,z]` or `{"vector": [...]}` - and given this shape they read zero keyframes and animate nothing
+with no error at all. Those branches rewrite the file in `processResources`, so their copy of the
+asset stays byte-identical to this one and a re-export can be copied straight across. Don't
+"simplify" the exported keyframes here to suit them, and don't assume a silent animation failure on
+an old branch is a code bug.
+
 Three files must agree, and mismatches fail *silently* (log spam at most):
 
 - Animation names in `RawAnimation.begin().thenPlay("...")` must exactly match the top-level keys
